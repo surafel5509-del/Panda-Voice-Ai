@@ -379,13 +379,17 @@ def settings_keyboard(context) -> InlineKeyboardMarkup:
     ])
 
 
-async def show_voices(chat, context, gender: str):
+async def show_voices(chat, context, gender: str, page: int = 0):
     try:
         voices = await get_voices(gender)
     except HTTPException as exc:
         await chat.reply_text(f"Voice library unavailable: {exc.detail}", reply_markup=main_keyboard())
         return
     context.user_data["voice_page_gender"] = gender
+    page_size = 8
+    max_page = max(0, (len(voices) - 1) // page_size)
+    page = min(max(0, page), max_page)
+    context.user_data["voice_page"] = page
     if not voices:
         await chat.reply_text(
             f"No publicly listed {gender} voices with clear gender tags were returned by Fish Audio. "
@@ -394,20 +398,26 @@ async def show_voices(chat, context, gender: str):
         )
         return
     rows = []
-    for voice in voices[:12]:
+    for voice in voices[page * page_size:(page + 1) * page_size]:
         name = voice["name"][:34]
         rows.append([
             InlineKeyboardButton(f"▶ Preview · {name}", callback_data=f"vpre:{voice['id']}"),
             InlineKeyboardButton("Select", callback_data=f"vsel:{voice['id']}"),
         ])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"vpage:{page - 1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"vpage:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton("⬅️ Gender", callback_data="voices"),
                  InlineKeyboardButton("🏠 Home", callback_data="home")])
     await chat.reply_text(
-        f"🎙 {gender.upper()} VOICES\n"
+        f"🎙 {gender.upper()} VOICES · Page {page + 1}/{max_page + 1}\n"
         "Preview a voice before selecting it. Voices are loaded from the public Fish Audio library.",
         reply_markup=InlineKeyboardMarkup(rows),
     )
-
 
 async def show_styles(chat, context):
     rows = []
@@ -473,7 +483,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
             ]))
     elif data.startswith("gender:"):
-        await show_voices(chat, context, data.split(":", 1)[1])
+        await show_voices(chat, context, data.split(":", 1)[1], 0)
+    elif data.startswith("vpage:"):
+        await show_voices(chat, context, context.user_data.get("voice_page_gender", "all"),
+                          int(data.split(":", 1)[1]))
     elif data.startswith("vpre:") or data.startswith("vsel:"):
         action, voice_id = data.split(":", 1)
         gender = context.user_data.get("voice_page_gender", "all")
