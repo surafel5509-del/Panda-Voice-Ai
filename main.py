@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import re
 import secrets
@@ -89,11 +90,26 @@ def db_connect():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
+@contextmanager
+def db_session():
+    conn = db_connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def init_db():
-    with db_connect() as conn:
+    with db_session() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS panda_users (
             user_id INTEGER PRIMARY KEY, unlimited INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL)""")
@@ -130,7 +146,8 @@ def active_tokens(conn, user_id: int):
 
 
 def create_user_token(user_id: int, name: str, days: int):
-    with db_connect() as conn:
+    with db_session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         ensure_user(conn, user_id)
         user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
         tokens = active_tokens(conn, user_id)
@@ -145,13 +162,12 @@ def create_user_token(user_id: int, name: str, days: int):
             "INSERT INTO api_tokens(user_id,name,token_hash,token_prefix,created_at,expires_at) "
             "VALUES(?,?,?,?,?,?)",
             (user_id, name[:48], token_hash(token), token[:13], created.isoformat(), expires))
-        conn.commit()
         return {"id": cur.lastrowid, "token": token, "name": name[:48],
                 "expires_at": expires, "unlimited": bool(user["unlimited"])}
 
 
 def get_user_tokens(user_id: int):
-    with db_connect() as conn:
+    with db_session() as conn:
         ensure_user(conn, user_id)
         user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
         rows = conn.execute(
@@ -161,7 +177,7 @@ def get_user_tokens(user_id: int):
 
 
 def revoke_user_token(user_id: int, token_id: int) -> bool:
-    with db_connect() as conn:
+    with db_session() as conn:
         cur = conn.execute(
             "UPDATE api_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL",
             (utc_now().isoformat(), token_id, user_id))
@@ -170,10 +186,10 @@ def revoke_user_token(user_id: int, token_id: int) -> bool:
 
 
 def unlock_user_unlimited(user_id: int):
-    with db_connect() as conn:
+    with db_session() as conn:
         ensure_user(conn, user_id)
         conn.execute("UPDATE panda_users SET unlimited=1 WHERE user_id=?", (user_id,))
-        conn.commit()
+
 
 
 def fish_headers(model: str | None = None) -> dict:
@@ -338,7 +354,7 @@ async def require_api_key(x_api_key: str | None):
 
     if PANDA_API_KEY and secrets.compare_digest(x_api_key, PANDA_API_KEY):
         return {"user_id": None, "unlimited": True, "master": True}
-    with db_connect() as conn:
+    with db_session() as conn:
         row = conn.execute(
             "SELECT t.*, u.unlimited AS user_unlimited FROM api_tokens t "
             "JOIN panda_users u ON u.user_id=t.user_id WHERE t.token_hash=? AND t.revoked_at IS NULL",
@@ -356,7 +372,6 @@ async def require_api_key(x_api_key: str | None):
         conn.execute(
             "UPDATE api_tokens SET usage_day=?, usage_count=?, last_used_at=? WHERE id=?",
             (day, count + 1, now.isoformat(), row["id"]))
-        conn.commit()
         return {"user_id": row["user_id"], "token_id": row["id"],
                 "unlimited": unlimited, "master": False, "daily_used": count + 1}
 
@@ -450,7 +465,7 @@ async def api_account(x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
     if account["master"]:
         return {"access": "master", "daily_limit": None, "usage_today": None}
-    with db_connect() as conn:
+    with db_session() as conn:
         row = conn.execute("SELECT usage_count,usage_day,expires_at,name FROM api_tokens WHERE id=?",
                            (account["token_id"],)).fetchone()
     used = row["usage_count"] if row["usage_day"] == utc_now().date().isoformat() else 0
