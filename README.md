@@ -1,61 +1,91 @@
-# 🐼 PANDA VOICE AI
+# PANDA VOICE AI 2.0
 
-A Telegram text-to-speech bot powered by the official Fish Audio TTS API.
+Professional Telegram text-to-speech bot and private Android-facing REST API powered by Fish Audio.
 
 ## Features
-- Amharic-first Telegram menus
-- Fish Audio voice selection using `reference_id`
-- Storytelling, Normal, Podcast, Voice-over, Audiobook, News, Documentary, Meditation, Energetic and Soft presets
-- MP3 generation, in-chat playback and downloadable audio
-- Per-user settings and recent-generation history
-- Friendly API error handling and configurable text limit
-- Railway-ready deployment
 
-## Deploy on Railway
+- English-only Telegram UI with a clean inline-keyboard workflow.
+- Live public Fish Audio voice catalog, split into female, male and all categories using the catalog's actual tags.
+- Preview each voice before selecting it.
+- 12 S2 natural-language delivery styles; preview the selected style with the selected voice.
+- Automatic style-aware voice ranking using the voice catalog's own tags.
+- Speed control (0.5x–2.0x).
+- MP3 playback and download in Telegram.
+- Private Android REST API. Fish Audio credentials remain server-side.
+- No public Swagger page; API routes are not displayed in the Telegram bot.
+- HTTP request logging is suppressed to prevent Telegram bot tokens appearing in request URLs.
 
-1. Deploy this GitHub repository from the `main` branch.
-2. Add these service variables in Railway → Variables:
-   - `TELEGRAM_BOT_TOKEN`: token from Telegram's @BotFather
-   - `FISH_API_KEY`: API key from [Fish Audio Developers](https://fish.audio/developers/)
-   - `FISH_MODEL`: `s2.1-pro-free` (default)
-3. Redeploy. The start command is `python main.py`.
+## Fish Audio implementation
 
-Never commit API keys or bot tokens to GitHub.
+- TTS endpoint: `POST https://api.fish.audio/v1/tts`
+- Model header: `s2.1-pro-free` by default.
+- Voice selection: `reference_id` from Fish Audio's public voice model catalog.
+- S2 emotion/delivery control: natural-language `[bracket]` cues inserted into the text.
+- Numeric prosody: `prosody.speed` and `prosody.volume`.
+- The app does not pretend that a free-text style label is a separate Fish API parameter.
 
-## Fish Audio model and voices
+The Fish Audio API model `s2.1-pro-free` is separate from the consumer web subscription's Free plan. API access, terms, limits and pricing may change; verify current developer pricing before production use.
 
-The default model is `s2.1-pro-free`. Change `FISH_MODEL` to a paid model only after enabling API billing in Fish Audio.
+## Railway environment variables
 
-The three sample voice IDs in `main.py` are from Fish Audio's official developer quickstart. Replace them with voice model IDs you have permission to use. Voice IDs are not the same as model names.
+| Variable | Required | Default |
+|---|---:|---|
+| `BOT_TOKEN` or `TELEGRAM_BOT_TOKEN` | For Telegram bot | — |
+| `FISH_AUDIO_API` or `FISH_API_KEY` | Yes | — |
+| `PANDA_API_KEY` | For Android API | — |
+| `FISH_MODEL` | No | `s2.1-pro-free` |
+| `MAX_TEXT_CHARS` | No | `4000` |
+| `LOG_LEVEL` | No | `INFO` |
 
-## Local run
+Never put Fish Audio or Telegram secrets in the Android app or GitHub.
+
+## REST API
+
+All app endpoints require the `X-API-Key` header.
+
+### List voices
+
+`GET /api/v1/voices?gender=female&style=story`
+
+Gender: `all`, `female`, `male`. Style is optional and can be any supported style key.
+
+### Generate MP3
+
+`POST /api/v1/tts`
+
+Headers:
+- `X-API-Key: <your PANDA_API_KEY>`
+- `Content-Type: application/json`
+
+JSON body:
+```json
+{
+  "text": "Hello from my Android app.",
+  "voice_id": "FISH_AUDIO_VOICE_MODEL_ID",
+  "style": "natural",
+  "speed": 1.0,
+  "volume": 0.0
+}
+```
+
+Success: raw `audio/mpeg` bytes (MP3), not JSON.
+
+Supported style keys: `natural`, `story`, `podcast`, `voiceover`, `audiobook`, `news`, `documentary`, `meditation`, `energetic`, `whisper`, `empathetic`, `commercial`.
+
+### Health check
+
+`GET /health`
+
+## Local development
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-# Add TELEGRAM_BOT_TOKEN and FISH_API_KEY to .env
-python main.py
+export BOT_TOKEN="..."
+export FISH_AUDIO_API="..."
+export PANDA_API_KEY="..."
+uvicorn main:app --reload --port 8000
 ```
 
-## Environment variables
-
-| Variable | Required | Default |
-|---|---|---|
-| TELEGRAM_BOT_TOKEN | Yes | — |
-| FISH_API_KEY | Yes for generation | — |
-| FISH_MODEL | No | s2.1-pro-free |
-| MAX_TEXT_CHARS | No | 3500 |
-| LOG_LEVEL | No | INFO |
-
-## Commands
-
-- `/start` — main menu
-- `/settings` — current voice and style
-- `/help` — usage help
-- `/cancel` — cancel text entry
-
-## Notes
-
-Audio is generated on demand and sent back as an MP3. The bot does not permanently store audio files. The recent history list is kept in memory and resets when the service restarts. Fish Audio API pricing, availability and fair-use limits are controlled by Fish Audio.
+Do not commit secrets. For Android production, call this backend from your app server where possible; a key embedded in an APK can be extracted. Use per-user authentication and quotas before opening this API to public users.
