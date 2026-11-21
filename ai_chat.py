@@ -86,7 +86,7 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
     async with _session_locks[sid]:
         with _db() as conn:
             row = conn.execute(
-                "SELECT owner_key, title, messages_json FROM ai_chat_sessions WHERE session_id=?",
+                "SELECT owner_key, title, messages_json, created_at FROM ai_chat_sessions WHERE session_id=?",
                 (sid,),
             ).fetchone()
         if row and row["owner_key"] != owner_key:
