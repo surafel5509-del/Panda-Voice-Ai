@@ -105,3 +105,95 @@ uvicorn main:app --reload --port 8000
 ```
 
 Do not commit secrets. For Android production, call this backend from your app server where possible; a key embedded in an APK can be extracted. Use per-user authentication and quotas before opening this API to public users.
+
+
+## AI Chat (OpenRouter)
+
+PANDA VOICE AI includes a persistent AI assistant available from the Telegram menu and the authenticated REST API. The default model is `z-ai/glm-5.3-flash`; reasoning is enabled by default. OpenRouter's opaque `reasoning_details` value is stored and passed back unchanged on follow-up turns when the provider returns it. It is never exposed in API responses or Telegram messages.
+
+Configure these Railway variables (never commit the API key):
+
+| Variable | Required | Default |
+|---|---:|---|
+| `OPENROUTER_API_KEY` | Yes, for AI Chat | — |
+| `OPENROUTER_MODEL` | No | `z-ai/glm-5.3-flash` |
+| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` |
+| `OPENROUTER_REASONING_ENABLED` | No | `true` |
+| `MAX_AI_CHAT_CHARS` | No | `6000` |
+
+### Telegram
+
+- Tap **AI Chat** in the main menu or send `/chat`.
+- Send messages normally; the conversation continues with stored context.
+- Send `/newchat` to start a fresh conversation.
+- Send `/chatex` to leave AI Chat and return to the main menu.
+
+### AI Chat REST endpoints
+
+All endpoints require `X-API-Key`. Sessions are private to the API token owner and stored in the existing persistent SQLite volume.
+
+#### Send a message
+
+`POST /api/v1/chat`
+
+Request:
+```json
+{
+  "message": "Explain how text-to-speech works.",
+  "session_id": null
+}
+```
+
+Response:
+```json
+{
+  "session_id": "returned-session-uuid",
+  "reply": "Text-to-speech converts written text into spoken audio...",
+  "model": "z-ai/glm-5.3-flash",
+  "usage": {}
+}
+```
+
+Pass the returned `session_id` in the next request to continue the same conversation. Omit it or send `null` to start a new session.
+
+Python example:
+```python
+import requests
+
+base_url = "https://panda-voice-ai-production.up.railway.app"
+headers = {
+    "X-API-Key": "YOUR_PANDA_API_TOKEN",
+    "Content-Type": "application/json",
+}
+payload = {
+    "message": "Hello! Please introduce yourself.",
+    "session_id": None,
+}
+response = requests.post(
+    f"{base_url}/api/v1/chat",
+    headers=headers,
+    json=payload,
+    timeout=120,
+)
+response.raise_for_status()
+data = response.json()
+print(data["reply"])
+session_id = data["session_id"]
+
+# Continue the same conversation:
+follow_up = requests.post(
+    f"{base_url}/api/v1/chat",
+    headers=headers,
+    json={"message": "Can you summarize that?", "session_id": session_id},
+    timeout=120,
+)
+follow_up.raise_for_status()
+print(follow_up.json()["reply"])
+```
+
+#### List and delete sessions
+
+- `GET /api/v1/chat/sessions?limit=20` — list the authenticated owner's recent sessions.
+- `DELETE /api/v1/chat/sessions/{session_id}` — delete one of the authenticated owner's sessions.
+
+The service does not return private reasoning traces. It only returns the assistant's user-facing answer, model name and provider usage metadata.
