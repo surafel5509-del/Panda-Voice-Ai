@@ -54,7 +54,7 @@ MODEL_PAGE_SIZE = 100
 VOICE_MAX_PAGES = 10
 DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
 PANDA_UNLIMITED_CODE = os.getenv("PANDA_UNLIMITED_CODE", "")
-DAILY_REQUEST_LIMIT = max(1, int(os.getenv("PANDA_DAILY_REQUEST_LIMIT", "10")))
+DAILY_REQUEST_LIMIT = max(1, int(os.getenv("PANDA_DAILY_REQUEST_LIMIT", "2")))
 
 # These are S2 natural-language direction prompts, not imaginary API style fields.
 STYLES = {
@@ -910,9 +910,11 @@ async def send_preview(chat, context, voice: dict, style: str = "natural"):
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "⭐ PANDA SUBSCRIPTION PLANS\nDaily, weekly and monthly access. Paid plans include up to "
-        f"{int(os.getenv('PANDA_SUBSCRIPTION_DAILY_LIMIT', '100'))} combined Chat + Voice requests per day.\n"
-        "Daily: 100 ⭐ · 50 requests · 1 day\nWeekly: 399 ⭐ · 500 requests · 7 days\nMonthly: 700 ⭐ · 2,500 requests · 30 days\n\nPayment is processed with Telegram Stars.",
+        "⭐ PANDA SUBSCRIPTION PLANS\n\n"
+        "☀️ Daily · 100 Stars · 50 requests · 1 day\n"
+        "📅 Weekly · 399 Stars · 500 requests · 7 days\n"
+        "🗓 Monthly · 700 Stars · 2,500 requests · 30 days\n\n"
+        "Requests are shared across AI Chat, Voice and API usage. Purchases use Telegram Stars; renewals are manual.",
         reply_markup=plans_keyboard(),
     )
 
@@ -1142,20 +1144,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             token = create_user_token(query.from_user.id, name, days)
             expiry = "Never expires" if token["expires_at"] is None else token["expires_at"][:10]
             sample = (
-                "curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/tts \\\n"
+                "curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/chat \\\n"
                 "  -H 'X-API-Key: " + token["token"] + "' \\\n"
                 "  -H 'Content-Type: application/json' \\\n"
-                "  -d '{\"text\":\"Hello from Panda\",\"voice_id\":\"VOICE_ID\",\"style\":\"natural\"}' \\\n"
-                "  --output speech.mp3")
+                "  -d '{\"message\":\"Hello Panda AI\",\"language\":\"en\"}'")
             await query.message.reply_text(
                 "✅ API TOKEN CREATED\n\n"
                 f"Name: {token['name']}\nExpires: {expiry}\n"
-                f"Daily access: {'Unlimited' if token['unlimited'] else str(DAILY_REQUEST_LIMIT) + ' requests'}\n\n"
-                "⚠️ Copy this secret now. It will not be shown again.\n"
-                f"<code>{token['token']}</code>\n\n"
-                "BASE URL\nhttps://panda-voice-ai-production.up.railway.app\n\n"
-                "ENDPOINTS\nGET /api/v1/voices?gender=all\nGET /api/v1/styles\nGET /api/v1/engines\nPOST /api/v1/preview\nPOST /api/v1/tts\nGET /api/v1/account\n\n"
-                "API CALL EXAMPLE\n<pre>" + sample.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>",
+                f"Account allowance: {'Unlimited' if token['unlimited'] else 'Shared free/subscription quota'}\\n\\n"
+                "⚠️ Copy this secret now. It will not be shown again.\\n"
+                f"<code>{token['token']}</code>\\n\\n"
+                "<b>BASE URL</b>\\nhttps://panda-voice-ai-production.up.railway.app\\n\\n"
+                "<b>VOICE API</b>\\nGET /api/v1/voices?gender=all\\nGET /api/v1/voices/{voice_id}\\nGET /api/v1/styles\\nGET /api/v1/engines\\nPOST /api/v1/preview\\nPOST /api/v1/tts\\n\\n"
+                "<b>AI CHAT API</b>\\nPOST /api/v1/chat\\nPOST /api/v1/chat/completions\\nGET /api/v1/chat/sessions\\nDELETE /api/v1/chat/sessions/{session_id}\\n\\n"
+                "<b>DEVELOPER / ACCOUNT</b>\\nGET /api/v1/account\\nGET /api/v1/limits\\nGET /api/v1/plans\\nGET /api/v1/subscription\\nGET /api/v1/tokens\\nDELETE /api/v1/tokens/{token_id}\\n\\n"
+                "<b>INTERACTIVE DOCS</b>\\nhttps://panda-voice-ai-production.up.railway.app/docs\\n"
+                "https://github.com/surafel5509-del/Panda-Voice-Ai/blob/main/API.md\\n\\n"
+                "<b>AI CHAT CURL EXAMPLE</b>\\n<pre>" + sample.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>",
                 parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
                     [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")]]))
@@ -1173,7 +1178,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             expiry = "Never" if item["expires_at"] is None else item["expires_at"][:10]
             lines.append(f"\n#{item['id']} · {item['name']} · {state}\n{item['token_prefix']}… · Expires: {expiry}\nUsage today: {item['usage_count'] if item['usage_day'] == utc_now().date().isoformat() else 0}")
             if state == "ACTIVE":
-                buttons.append([InlineKeyboardButton(f"Revoke #{item['id']}", callback_data=f"revoke:{item['id']}")])
+                buttons.append([InlineKeyboardButton(f"🗑 Delete #{item['id']}", callback_data=f"revoke:{item['id']}")])
         buttons.append([InlineKeyboardButton("🔑 Create API Token", callback_data="create_token")])
         buttons.append([InlineKeyboardButton("⬅️ Developers", callback_data="developers")])
         await query.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
