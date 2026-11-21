@@ -67,7 +67,7 @@ def init_ai_chat_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_chat_owner_updated ON ai_chat_sessions(owner_key, updated_at DESC)")
 
 
-async def chat_completion(owner_key: str, user_text: str, session_id: str | None = None):
+async def chat_completion(owner_key: str, user_text: str, session_id: str | None = None, language: str | None = None):
     if not OPENROUTER_API_KEY:
         raise AIChatError("AI Chat is not configured. Add OPENROUTER_API_KEY to Railway variables.", 503)
     user_text = (user_text or "").strip()
@@ -94,7 +94,14 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
         if requested_id and not row:
             raise AIChatError("Chat session not found.", 404)
         history = json.loads(row["messages_json"]) if row else []
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history,
+        language_prompts = {
+            "en": "Respond in English.",
+            "ar": "Respond in clear, natural Arabic.",
+            "es": "Respond in clear, natural Spanish.",
+            "la": "Respond in Classical Latin (Latinitas), using grammatically correct Latin.",
+        }
+        system_prompt = SYSTEM_PROMPT + (" " + language_prompts[language] if language in language_prompts else "")
+        messages = [{"role": "system", "content": system_prompt}, *history,
                     {"role": "user", "content": user_text}]
         payload = {
             "model": OPENROUTER_MODEL,
