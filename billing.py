@@ -97,6 +97,12 @@ def activate_paid_subscription(user_id: int, payload: str, currency: str, total_
     now = _now()
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        already = conn.execute(
+            "SELECT plan_id,expires_at FROM panda_subscriptions WHERE telegram_charge_id=?",
+            (charge_id,),
+        ).fetchone()
+        if already:
+            return {"plan_id": already["plan_id"], "expires_at": already["expires_at"]}
         pending = conn.execute(
             "SELECT * FROM panda_pending_payments WHERE payload=? AND user_id=? AND status='pending'",
             (payload, user_id),
