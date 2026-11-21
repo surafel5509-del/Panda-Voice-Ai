@@ -26,7 +26,7 @@ Errors use the standard JSON shape `{"detail":"..."}`. Common statuses: 401 inva
 - `GET /api/v1/tokens` — list owned API token metadata (never returns token secrets).
 - `DELETE /api/v1/tokens/{token_id}` — revoke/delete an owned API token.
 
-Free accounts share **2 requests per UTC day** across Telegram AI Chat, Telegram speech generation, and authenticated API Chat/TTS. Paid allowances apply across the full purchased subscription period: Daily = 50 requests / 1 day, Weekly = 500 / 7 days, Monthly = 2,500 / 30 days. All API tokens for one account share the same allowance. Owner/admin unlimited access bypasses the daily quota. Catalog lookups and session-management calls do not consume a request.
+Free accounts share **2 requests per UTC day** across Telegram AI Chat, Telegram speech generation, and authenticated API Chat/TTS. Paid allowances apply across the full purchased subscription period: Daily = 50 requests / 1 day, Weekly = 500 / 7 days, Monthly = 2,500 / 30 days. All API tokens for one account share the same allowance. Owner/admin unlimited access bypasses the daily quota. Catalog lookups and session-management calls do not consume a request. Free accounts may change voice style/model twice per UTC day; paid accounts have no style/model switching cap.
 
 ## Speech
 
@@ -46,12 +46,13 @@ Gender: `all`, `female`, `male`. Style: `natural`, `story`, `podcast`, `voiceove
   "text": "Hello from Panda Voice AI.",
   "voice_id": "FISH_AUDIO_VOICE_MODEL_ID",
   "style": "natural",
+  "model": "s2.1-pro-free",
   "speed": 1.0,
   "volume": 0.0
 }
 ```
 
-Returns MP3 bytes. Text generation consumes one shared daily request after reserving quota; failed upstream generation refunds the reservation.
+Returns MP3 bytes. Optional `model` values are `s2.1-pro-free`, `s2.1-pro`, `s2-pro`, and `s1`; premium engines require a paid subscription. Free users may change style/model a combined 2 times per UTC day; paid subscribers may switch freely. Speech generation consumes one shared account request; failed upstream generation refunds the reservation.
 
 ### Preview
 `POST /api/v1/preview` — same request body as TTS, returns inline MP3. Preview requests are not counted against the daily quota.
@@ -99,7 +100,7 @@ Sessions are isolated by API-token owner/account. Never share session IDs or API
 - `/start`, `/menu`, `/help`
 - `/chat`, `/newchat`, `/chatex`
 - `/plans`, `/language`
-- `/settings`, `/cancel`
+- `/settings`, `/developers`, `/cancel`
 
 ## Telegram Stars subscriptions
 
