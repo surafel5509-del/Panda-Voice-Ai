@@ -1009,7 +1009,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             result = await chat_completion(
-                "telegram:" + str(update.effective_user.id),
+                "telegram-user:" + str(update.effective_user.id),
                 text,
                 context.user_data.get("ai_chat_session_id"),
             )
