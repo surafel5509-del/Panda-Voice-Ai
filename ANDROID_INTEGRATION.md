@@ -51,6 +51,9 @@ Response example:
 
 - GET /api/v1/styles
 - GET /api/v1/engines
+- GET /api/v1/account — current token usage and expiry
+- GET /api/v1/limits — configured rate and daily limits
+- GET /api/v1/voices/{voice_id} — one voice detail
 
 Both require X-API-Key. The engine list identifies S2.1 Pro Free as free; the other engines may require Fish Audio API credit.
 
@@ -88,7 +91,11 @@ Limits:
 - text: 1 to the configured maximum character count
 - Response audio is not cached by the API.
 
-## 5. Kotlin + Retrofit
+## API token management
+
+Create API tokens inside the Telegram bot: Developers → Create API Token. Name the token, choose 7/30/90/365 days, and copy the secret when it is shown (it is not retrievable later). Each Telegram account can have at most two active tokens. Revoke tokens from Developers → My API Tokens. Standard tokens have a default 100 requests/day and 30 requests/minute; an authorized unlimited account is not subject to the daily cap, but still has the per-minute safety limit.
+
+## 6. Kotlin + Retrofit
 
 Gradle dependencies (use current stable versions in your project):
 
