@@ -191,11 +191,9 @@ def get_user_tokens(user_id: int):
 
 
 def revoke_user_token(user_id: int, token_id: int) -> bool:
+    # Permanently remove the owned token so it disappears from the account and can no longer authenticate.
     with db_session() as conn:
-        cur = conn.execute(
-            "UPDATE api_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL",
-            (utc_now().isoformat(), token_id, user_id))
-        conn.commit()
+        cur = conn.execute("DELETE FROM api_tokens WHERE id=? AND user_id=?", (token_id, user_id))
         return cur.rowcount > 0
 
 
@@ -1199,7 +1197,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("revoke:"):
         token_id = int(data.split(":", 1)[1])
         ok = revoke_user_token(query.from_user.id, token_id)
-        await query.message.reply_text("Token revoked." if ok else "Token not found or already revoked.",
+        await query.message.reply_text("Token deleted. Any app using it has lost access immediately." if ok else "Token not found or already deleted.",
                                        reply_markup=InlineKeyboardMarkup([
                                            [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
                                            [InlineKeyboardButton("⬅️ Developers", callback_data="developers")]]))
