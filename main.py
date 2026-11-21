@@ -133,6 +133,7 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES panda_users(user_id))""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)")
         conn.execute("CREATE TABLE IF NOT EXISTS panda_customization_usage (user_id INTEGER NOT NULL, usage_day TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, usage_day))")
+        conn.execute("CREATE TABLE IF NOT EXISTS panda_api_preferences (user_id INTEGER PRIMARY KEY, style TEXT NOT NULL DEFAULT 'natural', model TEXT NOT NULL DEFAULT 's2.1-pro-free')")
         conn.commit()
 
 
@@ -608,9 +609,15 @@ async def api_preview(payload: TTSInput, x_api_key: str | None = Header(default=
 @app.post("/api/v1/tts")
 async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
-    if payload.model and payload.model != "s2.1-pro-free" and account["user_id"] is not None:
-        if access_state(account["user_id"], account["unlimited"])["access"] == "free":
+    if account["user_id"] is not None:
+        state = access_state(account["user_id"], account["unlimited"])
+        selected_model = payload.model or FISH_MODEL
+        if selected_model != "s2.1-pro-free" and state["access"] == "free":
             raise HTTPException(status_code=403, detail="Paid subscription required for premium speech models.")
+        try:
+            enforce_api_customization(account["user_id"], payload.style, payload.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
     reserved = account["user_id"] is not None
     if reserved:
         try:
@@ -752,6 +759,21 @@ def consume_customization_change(user_id: int):
         conn.execute("INSERT INTO panda_customization_usage(user_id,usage_day,used) VALUES(?,?,1) ON CONFLICT(user_id,usage_day) DO UPDATE SET used=used+1", (user_id, day))
 
 
+def enforce_api_customization(user_id: int, style: str, model: str | None):
+    chosen_model = model or FISH_MODEL
+    with db_session() as conn:
+        conn.execute("INSERT OR IGNORE INTO panda_api_preferences(user_id,style,model) VALUES(?,?,?)",
+                     (user_id, "natural", FISH_MODEL))
+        row = conn.execute("SELECT style,model FROM panda_api_preferences WHERE user_id=?", (user_id,)).fetchone()
+        changed = (row["style"] != style) + (row["model"] != chosen_model)
+    if changed:
+        for _ in range(int(changed)):
+            consume_customization_change(user_id)
+        with db_session() as conn:
+            conn.execute("UPDATE panda_api_preferences SET style=?,model=? WHERE user_id=?",
+                         (style, chosen_model, user_id))
+
+
 def selected_voice(context) -> dict | None:
     return context.user_data.get("voice")
 
@@ -777,7 +799,9 @@ def home_text(context) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["_telegram_user_id"] = update.effective_user.id
     context.user_data.setdefault("style", "natural")
+    context.user_data.setdefault("engine", "s2.1-pro-free")
     context.user_data.setdefault("speed", 1.0)
     context.user_data.setdefault("gender", "female")
     context.user_data["waiting_text"] = False
@@ -1074,6 +1098,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         engine = data.split(":", 1)[1]
         if engine not in {"s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"}:
             return
+        if engine != "s2.1-pro-free" and access_state(query.from_user.id)["access"] == "free":
+            await query.message.reply_text("Premium speech models require an active subscription.", reply_markup=plans_keyboard())
+            return
         if engine != context.user_data.get("engine", "s2.1-pro-free"):
             try:
                 consume_customization_change(query.from_user.id)
@@ -1124,19 +1151,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "create_token":
         context.user_data["waiting_api_name"] = True
         await query.message.reply_text("Enter an API token name (for example: My Android App). Up to 5 active tokens are allowed; the secret is shown once.")
-    elif data == "developers_legacy":
-        unlimited, tokens = get_user_tokens(query.from_user.id)
-        await query.message.reply_text(
-            "👨‍💻 DEVELOPERS\n━━━━━━━━━━━━━━━━━━\n"
-            "Create and manage API tokens for your apps.\n"
-            f"Active tokens: {sum(1 for t in tokens if not t['revoked_at'] and (not t['expires_at'] or datetime.fromisoformat(t['expires_at']) > utc_now()))}/2\n"
-            f"Access: {'UNLIMITED' if unlimited else f'{DAILY_REQUEST_LIMIT} requests/day'}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔑 Create API Token", callback_data="create_token")],
-                [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
-                [InlineKeyboardButton("♾ Unlimited Access", callback_data="unlimited")],
-                [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
-            ]))
     elif data.startswith("token_days:"):
         days = int(data.split(":", 1)[1])
         name = context.user_data.pop("pending_api_name", "My App")
