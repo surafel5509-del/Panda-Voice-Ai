@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import logging
 import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
 import re
 import secrets
 import time
@@ -37,6 +39,10 @@ FISH_MODEL = os.getenv("FISH_MODEL", "s2.1-pro-free").strip()
 MAX_TEXT_CHARS = min(max(int(os.getenv("MAX_TEXT_CHARS", "4000")), 100), 10000)
 FISH_BASE = "https://api.fish.audio"
 MODEL_PAGE_SIZE = 100
+VOICE_MAX_PAGES = 10
+DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
+PANDA_UNLIMITED_CODE = os.getenv("PANDA_UNLIMITED_CODE", "")
+DAILY_REQUEST_LIMIT = max(1, int(os.getenv("PANDA_DAILY_REQUEST_LIMIT", "100")))
 
 # These are S2 natural-language direction prompts, not imaginary API style fields.
 STYLES = {
@@ -76,6 +82,96 @@ user_locks = defaultdict(asyncio.Lock)
 recent_history = defaultdict(lambda: deque(maxlen=8))
 api_rate = defaultdict(deque)
 telegram_app: Application | None = None
+db_lock = asyncio.Lock()
+
+
+def db_connect():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with db_connect() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS panda_users (
+            user_id INTEGER PRIMARY KEY, unlimited INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS api_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+            token_prefix TEXT NOT NULL, created_at TEXT NOT NULL,
+            expires_at TEXT, revoked_at TEXT, last_used_at TEXT,
+            usage_day TEXT, usage_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(user_id) REFERENCES panda_users(user_id))""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)")
+        conn.commit()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def ensure_user(conn, user_id: int):
+    conn.execute("INSERT OR IGNORE INTO panda_users(user_id, unlimited, created_at) VALUES(?, 0, ?)",
+                 (user_id, utc_now().isoformat()))
+
+
+def active_tokens(conn, user_id: int):
+    now = utc_now().isoformat()
+    return conn.execute(
+        "SELECT * FROM api_tokens WHERE user_id=? AND revoked_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at>?) ORDER BY id DESC", (user_id, now)
+    ).fetchall()
+
+
+def create_user_token(user_id: int, name: str, days: int):
+    with db_connect() as conn:
+        ensure_user(conn, user_id)
+        user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
+        tokens = active_tokens(conn, user_id)
+        if len(tokens) >= 2:
+            raise ValueError("You can have up to 2 active API tokens. Revoke one first.")
+        token = "panda_" + secrets.token_urlsafe(32)
+        created = utc_now()
+        expires = None if days == 0 and user["unlimited"] else (created + timedelta(days=days)).isoformat()
+        cur = conn.execute(
+            "INSERT INTO api_tokens(user_id,name,token_hash,token_prefix,created_at,expires_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (user_id, name[:48], token_hash(token), token[:13], created.isoformat(), expires))
+        conn.commit()
+        return {"id": cur.lastrowid, "token": token, "name": name[:48],
+                "expires_at": expires, "unlimited": bool(user["unlimited"])}
+
+
+def get_user_tokens(user_id: int):
+    with db_connect() as conn:
+        ensure_user(conn, user_id)
+        user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT id,name,token_prefix,created_at,expires_at,revoked_at,last_used_at,usage_count,usage_day "
+            "FROM api_tokens WHERE user_id=? ORDER BY id DESC", (user_id,)).fetchall()
+        return bool(user["unlimited"]), [dict(r) for r in rows]
+
+
+def revoke_user_token(user_id: int, token_id: int) -> bool:
+    with db_connect() as conn:
+        cur = conn.execute(
+            "UPDATE api_tokens SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL",
+            (utc_now().isoformat(), token_id, user_id))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def unlock_user_unlimited(user_id: int):
+    with db_connect() as conn:
+        ensure_user(conn, user_id)
+        conn.execute("UPDATE panda_users SET unlimited=1 WHERE user_id=?", (user_id,))
+        conn.commit()
 
 
 def fish_headers(model: str | None = None) -> dict:
@@ -135,11 +231,12 @@ async def fish_tts(text: str, voice_id: str, style: str = "natural", speed: floa
 
 
 def detect_gender(item: dict) -> str:
-    tags = " ".join(str(x) for x in (item.get("tags") or [])).lower()
-    title = str(item.get("title") or "").lower()
-    haystack = f"{tags} {title}"
-    female = any(x in haystack for x in ("female", "woman", "women", "girl", "feminine"))
-    male = any(x in haystack for x in ("male", "man", "men", "boy", "masculine"))
+    # Tokenize words: substring matching made "female" also match "male".
+    raw_tags = item.get("tags") or []
+    source = " ".join([str(x) for x in raw_tags] + [str(item.get("title") or "")])
+    words = set(re.findall(r"[a-z]+", source.lower()))
+    female = bool(words & {"female", "woman", "women", "girl", "feminine"})
+    male = bool(words & {"male", "man", "men", "boy", "masculine"})
     if female and not male:
         return "female"
     if male and not female:
@@ -158,6 +255,8 @@ def style_score(item: dict, style: str) -> int:
 
 
 async def get_voices(gender: str = "all", force: bool = False) -> list[dict]:
+    if gender not in ("all", "female", "male"):
+        raise HTTPException(status_code=422, detail="Gender must be all, female, or male.")
     now = time.monotonic()
     cached = voice_cache.get(gender)
     if cached and not force and now - cached[0] < VOICE_CACHE_SECONDS:
@@ -168,23 +267,31 @@ async def get_voices(gender: str = "all", force: bool = False) -> list[dict]:
             return cached[1]
         if not FISH_API_KEY:
             raise HTTPException(status_code=503, detail="Voice library is not configured.")
-        params = {"page_size": MODEL_PAGE_SIZE, "page_number": 1, "sort_by": "score"}
-        if gender in ("female", "male"):
-            params["tag"] = gender
+        all_items = []
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                res = await client.get(f"{FISH_BASE}/model", headers=fish_headers(), params=params)
-            if res.status_code != 200:
-                log.warning("Fish model library failed status=%s", res.status_code)
-                raise HTTPException(status_code=502, detail="Could not load the voice library.")
-            items = res.json().get("items", [])
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                for page in range(1, VOICE_MAX_PAGES + 1):
+                    params = {"page_size": MODEL_PAGE_SIZE, "page_number": page, "sort_by": "score"}
+                    # Do not send a gender tag filter: Fish's catalog tags are inconsistent.
+                    res = await client.get(f"{FISH_BASE}/model", headers=fish_headers(), params=params)
+                    if res.status_code != 200:
+                        log.warning("Fish model library failed status=%s page=%s", res.status_code, page)
+                        raise HTTPException(status_code=502, detail="Could not load the voice library.")
+                    body = res.json()
+                    items = body.get("items", []) if isinstance(body, dict) else []
+                    all_items.extend(items)
+                    if len(items) < MODEL_PAGE_SIZE:
+                        break
+        except HTTPException:
+            raise
         except (ValueError, httpx.HTTPError):
             log.exception("Could not parse Fish model library response")
             raise HTTPException(status_code=502, detail="Could not load the voice library.")
-        result = []
-        seen = set()
-        for item in items:
-            if item.get("type") != "tts" or item.get("state") != "trained":
+        result, seen = [], set()
+        for item in all_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") not in (None, "tts") or item.get("state") not in (None, "trained"):
                 continue
             if item.get("visibility") not in (None, "public"):
                 continue
@@ -204,6 +311,7 @@ async def get_voices(gender: str = "all", force: bool = False) -> list[dict]:
                 "style_score": 0,
             })
         voice_cache[gender] = (now, result)
+        log.info("Voice catalog loaded gender=%s count=%s scanned=%s", gender, len(result), len(all_items))
         return result
 
 
@@ -215,19 +323,40 @@ def best_voice(voices: list[dict], style: str) -> dict | None:
 
 
 async def require_api_key(x_api_key: str | None):
-    if not PANDA_API_KEY:
-        raise HTTPException(status_code=503, detail="Application API access is not enabled.")
-    import secrets
-    if not x_api_key or not secrets.compare_digest(x_api_key, PANDA_API_KEY):
-        raise HTTPException(status_code=401, detail="Invalid API key.")
-    fingerprint = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
-    now = time.monotonic()
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
+    fingerprint = token_hash(x_api_key)
+    now_mono = time.monotonic()
     window = api_rate[fingerprint]
-    while window and now - window[0] > 60:
+    while window and now_mono - window[0] > 60:
         window.popleft()
     if len(window) >= int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "30")):
         raise HTTPException(status_code=429, detail="PANDA API rate limit exceeded. Retry in one minute.")
-    window.append(now)
+    window.append(now_mono)
+
+    if PANDA_API_KEY and secrets.compare_digest(x_api_key, PANDA_API_KEY):
+        return {"user_id": None, "unlimited": True, "master": True}
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT t.*, u.unlimited AS user_unlimited FROM api_tokens t "
+            "JOIN panda_users u ON u.user_id=t.user_id WHERE t.token_hash=? AND t.revoked_at IS NULL",
+            (fingerprint,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid API key.")
+        now = utc_now()
+        if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) <= now:
+            raise HTTPException(status_code=401, detail="API token has expired.")
+        unlimited = bool(row["user_unlimited"])
+        day = now.date().isoformat()
+        count = row["usage_count"] if row["usage_day"] == day else 0
+        if not unlimited and count >= DAILY_REQUEST_LIMIT:
+            raise HTTPException(status_code=429, detail=f"Daily API limit reached ({DAILY_REQUEST_LIMIT}/day).")
+        conn.execute(
+            "UPDATE api_tokens SET usage_day=?, usage_count=?, last_used_at=? WHERE id=?",
+            (day, count + 1, now.isoformat(), row["id"]))
+        conn.commit()
+        return {"user_id": row["user_id"], "token_id": row["id"],
+                "unlimited": unlimited, "master": False, "daily_used": count + 1}
 
 
 class TTSInput(BaseModel):
@@ -243,6 +372,7 @@ class TTSInput(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global telegram_app
+    init_db()
     if BOT_TOKEN:
         telegram_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         telegram_app.add_handler(CommandHandler("start", start))
@@ -282,7 +412,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PANDA VOICE AI",
-    version="2.0.0",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -292,7 +422,7 @@ app = FastAPI(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "PANDA VOICE AI"}
+    return {"status": "ok", "service": "PANDA VOICE AI", "version": "3.0.0", "database": os.path.exists(DB_PATH)}
 
 
 @app.post("/telegram/webhook")
@@ -311,6 +441,28 @@ async def telegram_webhook(request: Request):
         log.exception("Could not process Telegram webhook update")
         raise HTTPException(status_code=400, detail="Invalid Telegram update.")
     return {"ok": True}
+
+
+@app.get("/api/v1/account")
+async def api_account(x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    if account["master"]:
+        return {"access": "master", "daily_limit": None, "usage_today": None}
+    with db_connect() as conn:
+        row = conn.execute("SELECT usage_count,usage_day,expires_at,name FROM api_tokens WHERE id=?",
+                           (account["token_id"],)).fetchone()
+    used = row["usage_count"] if row["usage_day"] == utc_now().date().isoformat() else 0
+    return {"token_name": row["name"], "access": "unlimited" if account["unlimited"] else "standard",
+            "daily_limit": None if account["unlimited"] else DAILY_REQUEST_LIMIT,
+            "usage_today": used, "expires_at": row["expires_at"]}
+
+
+@app.get("/api/v1/limits")
+async def api_limits(x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    return {"max_active_tokens": 2, "daily_request_limit": None if account["unlimited"] else DAILY_REQUEST_LIMIT,
+            "per_minute_limit": int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "30")),
+            "max_text_chars": MAX_TEXT_CHARS, "token_expiry_required": not account["unlimited"]}
 
 
 @app.get("/api/v1/styles")
@@ -391,6 +543,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("🎭 Speaking Styles", callback_data="styles")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
          InlineKeyboardButton("🕘 Recent", callback_data="history")],
+        [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")],
         [InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
 
@@ -637,6 +790,77 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Choose a voice first.", reply_markup=main_keyboard())
         else:
             await send_preview(chat, context, voice, current_style(context))
+    elif data == "developers":
+        unlimited, tokens = get_user_tokens(query.from_user.id)
+        await query.message.reply_text(
+            "👨‍💻 DEVELOPERS\n━━━━━━━━━━━━━━━━━━\n"
+            "Create and manage API tokens for your apps.\n"
+            f"Active tokens: {sum(1 for t in tokens if not t['revoked_at'] and (not t['expires_at'] or datetime.fromisoformat(t['expires_at']) > utc_now()))}/2\n"
+            f"Access: {'UNLIMITED' if unlimited else f'{DAILY_REQUEST_LIMIT} requests/day'}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔑 Create API Token", callback_data="create_token")],
+                [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
+                [InlineKeyboardButton("♾ Unlimited Access", callback_data="unlimited")],
+                [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
+            ]))
+    elif data == "create_token":
+        unlimited, _ = get_user_tokens(query.from_user.id)
+        context.user_data["waiting_api_name"] = True
+        await query.message.reply_text(
+            "Enter an API token name (for example: My Android App).\n"
+            "You can create up to 2 active tokens. The secret is shown only once.")
+    elif data.startswith("token_days:"):
+        days = int(data.split(":", 1)[1])
+        name = context.user_data.pop("pending_api_name", "My App")
+        try:
+            token = create_user_token(query.from_user.id, name, days)
+            expiry = "Never expires" if token["expires_at"] is None else token["expires_at"][:10]
+            sample = (
+                "curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/tts \\\n"
+                "  -H 'X-API-Key: " + token["token"] + "' \\\n"
+                "  -H 'Content-Type: application/json' \\\n"
+                "  -d '{\"text\":\"Hello from Panda\",\"voice_id\":\"VOICE_ID\",\"style\":\"natural\"}' \\\n"
+                "  --output speech.mp3")
+            await query.message.reply_text(
+                "✅ API TOKEN CREATED\n\n"
+                f"Name: {token['name']}\nExpires: {expiry}\n"
+                f"Daily access: {'Unlimited' if token['unlimited'] else str(DAILY_REQUEST_LIMIT) + ' requests'}\n\n"
+                "⚠️ Copy this secret now. It will not be shown again.\n"
+                f"<code>{token['token']}</code>\n\n"
+                "BASE URL\nhttps://panda-voice-ai-production.up.railway.app\n\n"
+                "ENDPOINTS\nGET /api/v1/voices?gender=all\nGET /api/v1/styles\nGET /api/v1/engines\nPOST /api/v1/preview\nPOST /api/v1/tts\nGET /api/v1/account\n\n"
+                "API CALL EXAMPLE\n<pre>" + sample.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>",
+                parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
+                    [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")]]))
+        except ValueError as exc:
+            await query.message.reply_text(str(exc), reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
+                 [InlineKeyboardButton("⬅️ Developers", callback_data="developers")]]))
+    elif data == "my_tokens":
+        unlimited, tokens = get_user_tokens(query.from_user.id)
+        lines = ["🗂 YOUR API TOKENS", f"Access: {'UNLIMITED' if unlimited else str(DAILY_REQUEST_LIMIT) + ' requests/day'}"]
+        buttons = []
+        for item in tokens:
+            state = "REVOKED" if item["revoked_at"] else (
+                "EXPIRED" if item["expires_at"] and datetime.fromisoformat(item["expires_at"]) <= utc_now() else "ACTIVE")
+            expiry = "Never" if item["expires_at"] is None else item["expires_at"][:10]
+            lines.append(f"\n#{item['id']} · {item['name']} · {state}\n{item['token_prefix']}… · Expires: {expiry}\nUsage today: {item['usage_count'] if item['usage_day'] == utc_now().date().isoformat() else 0}")
+            if state == "ACTIVE":
+                buttons.append([InlineKeyboardButton(f"Revoke #{item['id']}", callback_data=f"revoke:{item['id']}")])
+        buttons.append([InlineKeyboardButton("🔑 Create API Token", callback_data="create_token")])
+        buttons.append([InlineKeyboardButton("⬅️ Developers", callback_data="developers")])
+        await query.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("revoke:"):
+        token_id = int(data.split(":", 1)[1])
+        ok = revoke_user_token(query.from_user.id, token_id)
+        await query.message.reply_text("Token revoked." if ok else "Token not found or already revoked.",
+                                       reply_markup=InlineKeyboardMarkup([
+                                           [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
+                                           [InlineKeyboardButton("⬅️ Developers", callback_data="developers")]]))
+    elif data == "unlimited":
+        context.user_data["waiting_unlimited_code"] = True
+        await query.message.reply_text("Enter your unlimited access code to unlock unlimited API usage.")
     elif data == "settings":
         await query.message.reply_text(settings_text(context), reply_markup=settings_keyboard(context))
     elif data.startswith("speed:"):
@@ -661,6 +885,34 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
+    if context.user_data.pop("waiting_api_name", False):
+        if not text or len(text) > 48:
+            await update.effective_message.reply_text("Name must be between 1 and 48 characters. Tap Create API Token again.")
+            return
+        context.user_data["pending_api_name"] = text
+        unlimited, _ = get_user_tokens(update.effective_user.id)
+        choices = [
+            [InlineKeyboardButton("7 days", callback_data="token_days:7"),
+             InlineKeyboardButton("30 days", callback_data="token_days:30")],
+            [InlineKeyboardButton("90 days", callback_data="token_days:90"),
+             InlineKeyboardButton("365 days", callback_data="token_days:365")],
+        ]
+        if unlimited:
+            choices.append([InlineKeyboardButton("♾ Never expires", callback_data="token_days:0")])
+        choices.append([InlineKeyboardButton("⬅️ Cancel", callback_data="developers")])
+        await update.effective_message.reply_text("Choose this API token's validity period:",
+                                                   reply_markup=InlineKeyboardMarkup(choices))
+        return
+    if context.user_data.pop("waiting_unlimited_code", False):
+        if PANDA_UNLIMITED_CODE and secrets.compare_digest(text, PANDA_UNLIMITED_CODE):
+            unlock_user_unlimited(update.effective_user.id)
+            await update.effective_message.reply_text(
+                "♾ Unlimited API access unlocked for your account. You can now create tokens without an expiry date.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")]]))
+        else:
+            await update.effective_message.reply_text("Invalid code. Unlimited access was not enabled.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")]]))
+        return
     if not context.user_data.get("waiting_text"):
         await update.effective_message.reply_text("Choose Create Speech to start.", reply_markup=main_keyboard())
         return
