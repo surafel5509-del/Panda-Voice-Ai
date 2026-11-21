@@ -675,7 +675,8 @@ async def api_chat_sessions(limit: int = Query(default=20, ge=1, le=50),
 
 
 @app.delete("/api/v1/chat/sessions/{session_id}")
-async def api_delete_chat_session(session_id: str, x_api_key: str | None = Header(default=None)):    account = await require_api_key(x_api_key)
+async def api_delete_chat_session(session_id: str, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
     try:
         deleted = delete_chat_session(account["owner_key"], session_id)
     except AIChatError as exc:
@@ -946,7 +947,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "create":
         if not selected_voice(context):
             await query.message.reply_text("Please choose a voice first.", reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Open Voice Library", callback_data="voices")]]))            return
+                [[InlineKeyboardButton("Open Voice Library", callback_data="voices")]]))
+            return
         context.user_data["waiting_text"] = True
         await query.message.reply_text(
             f"✍️ SEND YOUR TEXT\nMaximum length: {MAX_TEXT_CHARS:,} characters.\n"
