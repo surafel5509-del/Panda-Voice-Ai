@@ -17,7 +17,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice, BotCommand, MenuButtonCommands
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes,
@@ -132,6 +132,7 @@ def init_db():
             usage_day TEXT, usage_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(user_id) REFERENCES panda_users(user_id))""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)")
+        conn.execute("CREATE TABLE IF NOT EXISTS panda_customization_usage (user_id INTEGER NOT NULL, usage_day TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, usage_day))")
         conn.commit()
 
 
@@ -162,8 +163,9 @@ def create_user_token(user_id: int, name: str, days: int):
         ensure_user(conn, user_id)
         user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
         tokens = active_tokens(conn, user_id)
-        if len(tokens) >= 2:
-            raise ValueError("You can have up to 2 active API tokens. Revoke one first.")
+        max_tokens = max(1, int(os.getenv("PANDA_MAX_ACTIVE_TOKENS", "5")))
+        if len(tokens) >= max_tokens:
+            raise ValueError(f"You can have up to {max_tokens} active API tokens. Delete one first.")
         token = "panda_" + secrets.token_urlsafe(32)
         created = utc_now()
         if days not in (0, 7, 30, 90, 365) or (days == 0 and not user["unlimited"]):
@@ -212,12 +214,15 @@ def fish_headers(model: str | None = None) -> dict:
 
 
 async def fish_tts(text: str, voice_id: str, style: str = "natural", speed: float = 1.0,
-                   volume: float = 0.0) -> bytes:
+                   volume: float = 0.0, model: str | None = None) -> bytes:
     if style not in STYLES:
         raise HTTPException(status_code=422, detail="Unsupported speaking style.")
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", voice_id):
         raise HTTPException(status_code=422, detail="Invalid voice identifier.")
     label, prefix, _ = STYLES[style]
+    selected_model = model or FISH_MODEL
+    if selected_model not in {"s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"}:
+        raise HTTPException(status_code=422, detail="Unsupported speech model.")
     payload = {
         "text": prefix + text,
         "reference_id": voice_id,
@@ -229,7 +234,7 @@ async def fish_tts(text: str, voice_id: str, style: str = "natural", speed: floa
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
             async with client.stream("POST", f"{FISH_BASE}/v1/tts",
-                                     headers=fish_headers(FISH_MODEL), json=payload) as res:
+                                     headers=fish_headers(selected_model), json=payload) as res:
                 if res.status_code != 200:
                     raw = (await res.aread()).decode("utf-8", "replace")[:500]
                     log.warning("Fish TTS failed status=%s body=%s", res.status_code, raw)
@@ -408,6 +413,7 @@ class TTSInput(BaseModel):
     style: Literal["natural", "story", "podcast", "voiceover", "audiobook", "news",
                    "documentary", "meditation", "energetic", "whisper", "empathetic",
                    "commercial"] = "natural"
+    model: Literal["s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"] | None = None
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     volume: float = Field(default=0.0, ge=-20.0, le=20.0)
 
@@ -428,12 +434,22 @@ async def lifespan(app: FastAPI):
         telegram_app.add_handler(CommandHandler("plans", plans_command))
         telegram_app.add_handler(CommandHandler("language", language_command))
         telegram_app.add_handler(CommandHandler("settings", settings_command))
+        telegram_app.add_handler(CommandHandler("developers", developers_command))
         telegram_app.add_handler(CommandHandler("cancel", cancel))
         telegram_app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
         telegram_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
         telegram_app.add_handler(CallbackQueryHandler(on_button))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
         await telegram_app.initialize()
+        await telegram_app.bot.set_my_commands([
+            BotCommand("start", "Open Panda Voice AI"), BotCommand("menu", "Show main menu"),
+            BotCommand("chat", "Start AI Chat"), BotCommand("newchat", "New AI conversation"),
+            BotCommand("chatex", "Exit AI Chat"), BotCommand("plans", "Subscription plans"),
+            BotCommand("language", "AI Chat language"), BotCommand("settings", "Voice and model settings"),
+            BotCommand("developers", "API tokens and developer tools"), BotCommand("help", "Help"),
+            BotCommand("cancel", "Cancel current action"),
+        ])
+        await telegram_app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
         await telegram_app.start()
         domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
         webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
@@ -515,7 +531,7 @@ async def api_limits(x_api_key: str | None = Header(default=None)):
     quota = access_state(account["user_id"], account["unlimited"]) if account["user_id"] is not None else {
         "access": "unlimited", "daily_limit": None, "used_today": None, "remaining_today": None
     }
-    return {"max_active_tokens": 2, **quota,
+    return {"max_active_tokens": int(os.getenv("PANDA_MAX_ACTIVE_TOKENS", "5")), **quota,
             "per_minute_limit": int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "30")),
             "max_text_chars": MAX_TEXT_CHARS, "token_expiry_required": not account["unlimited"]}
 
@@ -592,6 +608,9 @@ async def api_preview(payload: TTSInput, x_api_key: str | None = Header(default=
 @app.post("/api/v1/tts")
 async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
+    if payload.model and payload.model != "s2.1-pro-free" and account["user_id"] is not None:
+        if access_state(account["user_id"], account["unlimited"])["access"] == "free":
+            raise HTTPException(status_code=403, detail="Paid subscription required for premium speech models.")
     reserved = account["user_id"] is not None
     if reserved:
         try:
@@ -600,7 +619,7 @@ async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None
             raise HTTPException(status_code=429, detail=str(exc))
     try:
         audio = await fish_tts(payload.text.strip(), payload.voice_id, payload.style,
-                               payload.speed, payload.volume)
+                               payload.speed, payload.volume, payload.model)
     except Exception:
         if reserved:
             refund_request(account["user_id"])
@@ -688,12 +707,12 @@ async def api_delete_chat_session(session_id: str, x_api_key: str | None = Heade
 
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Create Speech", callback_data="create"), InlineKeyboardButton("🤖 AI Chat", callback_data="ai_chat")],
-        [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"), InlineKeyboardButton("🎭 Speaking Styles", callback_data="styles")],
-        [InlineKeyboardButton("⭐ Plans", callback_data="plans"), InlineKeyboardButton("🌐 Language", callback_data="language")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"), InlineKeyboardButton("🕘 Recent", callback_data="history")],
-        [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")],
-        [InlineKeyboardButton("📋 Menu", callback_data="home"), InlineKeyboardButton("❔ Help", callback_data="help")],
+        [InlineKeyboardButton("🎧 Create Voice", callback_data="create"), InlineKeyboardButton("🤖 AI Assistant", callback_data="ai_chat")],
+        [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"), InlineKeyboardButton("🎨 Voice Styles", callback_data="styles")],
+        [InlineKeyboardButton("⭐ Upgrade Plan", callback_data="plans"), InlineKeyboardButton("🌍 Language", callback_data="language")],
+        [InlineKeyboardButton("⚙️ Studio Settings", callback_data="settings"), InlineKeyboardButton("🕘 History", callback_data="history")],
+        [InlineKeyboardButton("👨‍💻 Developer Center", callback_data="developers")],
+        [InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
 
 
@@ -717,7 +736,7 @@ def home_text(context) -> str:
         f"🎭 Style: {STYLES[style][0]}\n"
         f"⚡ Speed: {context.user_data.get('speed', 1.0):.1f}x\n\n"
         "Choose an action below to get started.\n"
-        "Free access: 10 shared Chat + Voice requests per day. Use ⭐ Plans to upgrade."
+        "Free access: 2 shared Chat + Voice requests per day. Use ⭐ Plans to upgrade."
     )
 
 
@@ -761,7 +780,8 @@ def settings_text(context) -> str:
         f"Voice: {voice['name'] if voice else 'Not selected'}\n"
         f"Style: {STYLES[current_style(context)][0]}\n"
         f"Speed: {context.user_data.get('speed', 1.0):.1f}x\n"
-        f"Engine: Fish Audio S2.1 Pro Free"
+        f"Engine: {context.user_data.get('engine', 's2.1-pro-free')}\n"
+        "Free accounts: 2 style/model changes per UTC day; subscribers can switch freely."
     )
 
 
@@ -773,6 +793,7 @@ def settings_keyboard(context) -> InlineKeyboardMarkup:
          InlineKeyboardButton("➕ Faster", callback_data="speed:up")],
         [InlineKeyboardButton("🎙 Change Voice", callback_data="voices"),
          InlineKeyboardButton("🎭 Change Style", callback_data="styles")],
+        [InlineKeyboardButton("🧠 Change Speech Model", callback_data="engines")],
         [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
     ])
 
@@ -836,7 +857,8 @@ async def send_preview(chat, context, voice: dict, style: str = "natural"):
         try:
             audio = await fish_tts(
                 PREVIEW_TEXT if style == "natural" else STYLE_PREVIEW_TEXT,
-                voice["id"], style, float(context.user_data.get("speed", 1.0)), 0.0
+                voice["id"], style, float(context.user_data.get("speed", 1.0)), 0.0,
+                context.user_data.get("engine", "s2.1-pro-free")
             )
             file = BytesIO(audio)
             file.name = "panda-preview.mp3"
@@ -1150,6 +1172,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Text entry cancelled.", reply_markup=main_keyboard())
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["_telegram_user_id"] = update.effective_user.id
     text = (update.effective_message.text or "").strip()
     if context.user_data.get("ai_chat_active"):
         if not text:
@@ -1230,7 +1253,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         try:
             consume_request(user_id)
-            audio = await fish_tts(text, voice["id"], style, speed, 0.0)
+            audio = await fish_tts(text, voice["id"], style, speed, 0.0, context.user_data.get("engine", "s2.1-pro-free"))
             file = BytesIO(audio)
             file.name = "panda-voice.mp3"
             await update.effective_message.reply_audio(
