@@ -46,6 +46,10 @@ class BillingTests(unittest.TestCase):
             state = billing.access_state(1001)
             self.assertEqual(state["access"], "subscription")
             self.assertEqual(state["plan"], "daily")
+            repeated = billing.activate_paid_subscription(
+                1001, invoice["payload"], "XTR", 25, "telegram-charge-test-1"
+            )
+            self.assertEqual(repeated, active)
         finally:
             billing.PLANS["daily"]["stars"] = old_price
 
