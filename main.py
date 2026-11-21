@@ -138,7 +138,9 @@ def create_user_token(user_id: int, name: str, days: int):
             raise ValueError("You can have up to 2 active API tokens. Revoke one first.")
         token = "panda_" + secrets.token_urlsafe(32)
         created = utc_now()
-        expires = None if days == 0 and user["unlimited"] else (created + timedelta(days=days)).isoformat()
+        if days not in (0, 7, 30, 90, 365) or (days == 0 and not user["unlimited"]):
+            raise ValueError("Invalid token validity period.")
+        expires = None if days == 0 else (created + timedelta(days=days)).isoformat()
         cur = conn.execute(
             "INSERT INTO api_tokens(user_id,name,token_hash,token_prefix,created_at,expires_at) "
             "VALUES(?,?,?,?,?,?)",
@@ -508,6 +510,17 @@ async def api_voices(gender: Literal["all", "female", "male"] = "all",
         "gender": gender,
         "style": style,
     }
+
+
+@app.get("/api/v1/voices/{voice_id}")
+async def api_voice_detail(voice_id: str, gender: Literal["all", "female", "male"] = "all",
+                           x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    voices = await get_voices(gender)
+    voice = next((v for v in voices if v["id"] == voice_id), None)
+    if not voice:
+        raise HTTPException(status_code=404, detail="Voice not found in the public catalog.")
+    return voice
 
 
 @app.post("/api/v1/preview")
