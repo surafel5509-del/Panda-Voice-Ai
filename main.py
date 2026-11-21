@@ -1151,16 +1151,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 "✅ API TOKEN CREATED\n\n"
                 f"Name: {token['name']}\nExpires: {expiry}\n"
-                f"Account allowance: {'Unlimited' if token['unlimited'] else 'Shared free/subscription quota'}\\n\\n"
-                "⚠️ Copy this secret now. It will not be shown again.\\n"
-                f"<code>{token['token']}</code>\\n\\n"
-                "<b>BASE URL</b>\\nhttps://panda-voice-ai-production.up.railway.app\\n\\n"
-                "<b>VOICE API</b>\\nGET /api/v1/voices?gender=all\\nGET /api/v1/voices/{voice_id}\\nGET /api/v1/styles\\nGET /api/v1/engines\\nPOST /api/v1/preview\\nPOST /api/v1/tts\\n\\n"
-                "<b>AI CHAT API</b>\\nPOST /api/v1/chat\\nPOST /api/v1/chat/completions\\nGET /api/v1/chat/sessions\\nDELETE /api/v1/chat/sessions/{session_id}\\n\\n"
-                "<b>DEVELOPER / ACCOUNT</b>\\nGET /api/v1/account\\nGET /api/v1/limits\\nGET /api/v1/plans\\nGET /api/v1/subscription\\nGET /api/v1/tokens\\nDELETE /api/v1/tokens/{token_id}\\n\\n"
-                "<b>INTERACTIVE DOCS</b>\\nhttps://panda-voice-ai-production.up.railway.app/docs\\n"
-                "https://github.com/surafel5509-del/Panda-Voice-Ai/blob/main/API.md\\n\\n"
-                "<b>AI CHAT CURL EXAMPLE</b>\\n<pre>" + sample.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>",
+                f"Account allowance: {'Unlimited' if token['unlimited'] else 'Shared free/subscription quota'}\n\n"
+                "⚠️ Copy this secret now. It will not be shown again.\n"
+                f"<code>{token['token']}</code>\n\n"
+                "<b>BASE URL</b>\nhttps://panda-voice-ai-production.up.railway.app\n\n"
+                "<b>VOICE API</b>\nGET /api/v1/voices?gender=all\nGET /api/v1/voices/{voice_id}\nGET /api/v1/styles\nGET /api/v1/engines\nPOST /api/v1/preview\nPOST /api/v1/tts\n\n"
+                "<b>AI CHAT API</b>\nPOST /api/v1/chat\nPOST /api/v1/chat/completions\nGET /api/v1/chat/sessions\nDELETE /api/v1/chat/sessions/{session_id}\n\n"
+                "<b>DEVELOPER / ACCOUNT</b>\nGET /api/v1/account\nGET /api/v1/limits\nGET /api/v1/plans\nGET /api/v1/subscription\nGET /api/v1/tokens\nDELETE /api/v1/tokens/{token_id}\n\n"
+                "<b>INTERACTIVE DOCS</b>\nhttps://panda-voice-ai-production.up.railway.app/docs\n"
+                "https://github.com/surafel5509-del/Panda-Voice-Ai/blob/main/API.md\n\n"
+                "<b>AI CHAT CURL EXAMPLE</b>\n<pre>" + sample.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>",
                 parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗂 My API Tokens", callback_data="my_tokens")],
                     [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")]]))
