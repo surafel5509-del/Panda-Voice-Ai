@@ -686,6 +686,28 @@ async def api_subscription(x_api_key: str | None = Header(default=None)):
     return {**access_state(account["user_id"], account["unlimited"]), "subscription": current_subscription(account["user_id"])}
 
 
+@app.get("/api/v1/tokens")
+async def api_tokens(x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    if account["user_id"] is None:
+        return {"items": [], "note": "Master API credentials are not account tokens."}
+    _, tokens = get_user_tokens(account["user_id"])
+    return {"items": [{"id": t["id"], "name": t["name"], "prefix": t["token_prefix"],
+        "created_at": t["created_at"], "expires_at": t["expires_at"], "revoked_at": t["revoked_at"],
+        "last_used_at": t["last_used_at"],
+        "usage_today": t["usage_count"] if t["usage_day"] == utc_now().date().isoformat() else 0} for t in tokens]}
+
+
+@app.delete("/api/v1/tokens/{token_id}")
+async def api_delete_token(token_id: int, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    if account["user_id"] is None:
+        raise HTTPException(status_code=403, detail="Master keys cannot manage account tokens.")
+    if not revoke_user_token(account["user_id"], token_id):
+        raise HTTPException(status_code=404, detail="API token not found or already deleted.")
+    return {"deleted": True, "token_id": token_id}
+
+
 @app.get("/api/v1/chat/sessions")
 async def api_chat_sessions(limit: int = Query(default=20, ge=1, le=50),
                             x_api_key: str | None = Header(default=None)):
@@ -714,6 +736,20 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👨‍💻 Developer Center", callback_data="developers")],
         [InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
+
+
+def consume_customization_change(user_id: int):
+    state = access_state(user_id)
+    if state["access"] in ("subscription", "unlimited"):
+        return
+    day = utc_now().date().isoformat()
+    with db_session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT used FROM panda_customization_usage WHERE user_id=? AND usage_day=?", (user_id, day)).fetchone()
+        used = int(row["used"]) if row else 0
+        if used >= 2:
+            raise ValueError("Free plan allows only 2 combined style/model changes per day. Upgrade to switch freely.")
+        conn.execute("INSERT INTO panda_customization_usage(user_id,usage_day,used) VALUES(?,?,1) ON CONFLICT(user_id,usage_day) DO UPDATE SET used=used+1", (user_id, day))
 
 
 def selected_voice(context) -> dict | None:
@@ -876,7 +912,7 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "⭐ PANDA SUBSCRIPTION PLANS\nDaily, weekly and monthly access. Paid plans include up to "
         f"{int(os.getenv('PANDA_SUBSCRIPTION_DAILY_LIMIT', '100'))} combined Chat + Voice requests per day.\n"
-        "Choose a plan below. Payment is processed with Telegram Stars.",
+        "Daily: 100 ⭐ · 50 requests · 1 day\nWeekly: 399 ⭐ · 500 requests · 7 days\nMonthly: 700 ⭐ · 2,500 requests · 30 days\n\nPayment is processed with Telegram Stars.",
         reply_markup=plans_keyboard(),
     )
 
@@ -936,7 +972,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             invoice = create_pending_payment(query.from_user.id, data.split(":", 1)[1])
             await context.bot.send_invoice(chat_id=query.message.chat_id, title=f"PANDA {invoice['name']} plan",
-                description=f"{invoice['days']} days of paid Panda Voice AI access.", payload=invoice["payload"],
+                description=f"{invoice['days']} days and {invoice['requests']} requests of Panda Voice AI access.", payload=invoice["payload"],
                 provider_token="", currency="XTR", prices=[LabeledPrice(label=f"{invoice['name']} access", amount=invoice["stars"])])
         except ValueError as exc:
             await query.message.reply_text(str(exc), reply_markup=plans_keyboard())
@@ -1024,10 +1060,36 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(exc.detail)
     elif data == "styles":
         await show_styles(chat, context)
+    elif data == "engines":
+        await query.message.reply_text("🧠 Choose a speech model:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("S2.1 Pro Free", callback_data="engine:s2.1-pro-free")],
+            [InlineKeyboardButton("S2.1 Pro", callback_data="engine:s2.1-pro")],
+            [InlineKeyboardButton("S2 Pro", callback_data="engine:s2-pro")],
+            [InlineKeyboardButton("S1 Legacy", callback_data="engine:s1")],
+            [InlineKeyboardButton("⬅️ Settings", callback_data="settings")],
+        ]))
+    elif data.startswith("engine:"):
+        engine = data.split(":", 1)[1]
+        if engine not in {"s2.1-pro-free", "s2.1-pro", "s2-pro", "s1"}:
+            return
+        if engine != context.user_data.get("engine", "s2.1-pro-free"):
+            try:
+                consume_customization_change(query.from_user.id)
+            except ValueError as exc:
+                await query.message.reply_text(str(exc), reply_markup=plans_keyboard())
+                return
+        context.user_data["engine"] = engine
+        await query.message.reply_text(f"✅ Speech model set to {engine}.", reply_markup=settings_keyboard(context))
     elif data.startswith("style:"):
         style = data.split(":", 1)[1]
         if style not in STYLES:
             return
+        if style != current_style(context):
+            try:
+                consume_customization_change(query.from_user.id)
+            except ValueError as exc:
+                await query.message.reply_text(str(exc), reply_markup=plans_keyboard())
+                return
         context.user_data["style"] = style
         voice = selected_voice(context)
         gender = context.user_data.get("gender", "female")
@@ -1056,6 +1118,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_preview(chat, context, voice, current_style(context))
     elif data == "developers":
+        await developers_screen(query.message, query.from_user.id)
+    elif data == "create_token":
+        context.user_data["waiting_api_name"] = True
+        await query.message.reply_text("Enter an API token name (for example: My Android App). Up to 5 active tokens are allowed; the secret is shown once.")
+    elif data == "developers_legacy":
         unlimited, tokens = get_user_tokens(query.from_user.id)
         await query.message.reply_text(
             "👨‍💻 DEVELOPERS\n━━━━━━━━━━━━━━━━━━\n"
@@ -1068,12 +1135,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("♾ Unlimited Access", callback_data="unlimited")],
                 [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
             ]))
-    elif data == "create_token":
-        unlimited, _ = get_user_tokens(query.from_user.id)
-        context.user_data["waiting_api_name"] = True
-        await query.message.reply_text(
-            "Enter an API token name (for example: My Android App).\n"
-            "You can create up to 2 active tokens. The secret is shown only once.")
     elif data.startswith("token_days:"):
         days = int(data.split(":", 1)[1])
         name = context.user_data.pop("pending_api_name", "My App")
@@ -1141,6 +1202,30 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
     elif data == "noop":
         return
+
+
+async def developers_screen(message, user_id: int):
+    unlimited, tokens = get_user_tokens(user_id)
+    active = sum(1 for t in tokens if not t["revoked_at"] and (not t["expires_at"] or datetime.fromisoformat(t["expires_at"]) > utc_now()))
+    cap = int(os.getenv("PANDA_MAX_ACTIVE_TOKENS", "5"))
+    await message.reply_text(
+        "👨‍💻 PANDA DEVELOPER CENTER\n━━━━━━━━━━━━━━━━━━\n"
+        "Create API credentials, integrate AI Chat and Voice, and manage access securely.\n\n"
+        f"Active tokens: {active}/{cap}\n"
+        f"Account access: {'UNLIMITED' if unlimited else 'Free / subscription quota'}\n\n"
+        "Base URL: https://panda-voice-ai-production.up.railway.app\n"
+        "Swagger: https://panda-voice-ai-production.up.railway.app/docs\n"
+        "Full guide: https://github.com/surafel5509-del/Panda-Voice-Ai/blob/main/API.md",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Create API Token", callback_data="create_token")],
+            [InlineKeyboardButton("🗂 Manage / Delete Tokens", callback_data="my_tokens")],
+            [InlineKeyboardButton("📖 Open API Docs", url="https://panda-voice-ai-production.up.railway.app/docs")],
+            [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
+        ]))
+
+
+async def developers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await developers_screen(update.effective_message, update.effective_user.id)
 
 
 async def ai_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
