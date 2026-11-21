@@ -123,26 +123,26 @@ def consume_request(user_id: int, unlimited: bool = False):
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         user = conn.execute("SELECT unlimited FROM panda_users WHERE user_id=?", (user_id,)).fetchone()
-        if user and bool(user["unlimited"]):
-            return access_state(user_id, True)
-        sub = _active_subscription(conn, user_id, now)
-        if sub:
-            limit = PLANS.get(sub["plan_id"], {}).get("requests", PAID_DAILY_LIMIT)
-            row = conn.execute("SELECT used FROM panda_subscription_usage WHERE user_id=? AND subscription_id=?",
-                               (user_id, sub["id"])).fetchone()
-            used = int(row["used"]) if row else 0
-            if used >= limit:
-                raise ValueError(f"{sub['plan_id'].title()} plan request limit reached ({limit} requests for this subscription). Renew or upgrade.")
-            conn.execute("INSERT INTO panda_subscription_usage(user_id,subscription_id,used) VALUES(?,?,1) ON CONFLICT(user_id,subscription_id) DO UPDATE SET used=used+1",
-                         (user_id, sub["id"]))
-        else:
-            row = conn.execute("SELECT used FROM panda_usage WHERE user_id=? AND usage_day=?", (user_id, day)).fetchone()
-            used = int(row["used"]) if row else 0
-            if used >= FREE_DAILY_LIMIT:
-                raise ValueError(f"Free plan limit reached ({FREE_DAILY_LIMIT} requests/day). Upgrade or try again tomorrow.")
-            conn.execute("INSERT INTO panda_usage(user_id,usage_day,used) VALUES(?,?,1) ON CONFLICT(user_id,usage_day) DO UPDATE SET used=used+1",
-                         (user_id, day))
-    return access_state(user_id)
+        is_unlimited = bool(user and user["unlimited"])
+        if not is_unlimited:
+            sub = _active_subscription(conn, user_id, now)
+            if sub:
+                limit = PLANS.get(sub["plan_id"], {}).get("requests", PAID_DAILY_LIMIT)
+                row = conn.execute("SELECT used FROM panda_subscription_usage WHERE user_id=? AND subscription_id=?",
+                                   (user_id, sub["id"])).fetchone()
+                used = int(row["used"]) if row else 0
+                if used >= limit:
+                    raise ValueError(f"{sub['plan_id'].title()} plan request limit reached ({limit} requests for this subscription). Renew or upgrade.")
+                conn.execute("INSERT INTO panda_subscription_usage(user_id,subscription_id,used) VALUES(?,?,1) ON CONFLICT(user_id,subscription_id) DO UPDATE SET used=used+1",
+                             (user_id, sub["id"]))
+            else:
+                row = conn.execute("SELECT used FROM panda_usage WHERE user_id=? AND usage_day=?", (user_id, day)).fetchone()
+                used = int(row["used"]) if row else 0
+                if used >= FREE_DAILY_LIMIT:
+                    raise ValueError(f"Free plan limit reached ({FREE_DAILY_LIMIT} requests/day). Upgrade or try again tomorrow.")
+                conn.execute("INSERT INTO panda_usage(user_id,usage_day,used) VALUES(?,?,1) ON CONFLICT(user_id,usage_day) DO UPDATE SET used=used+1",
+                             (user_id, day))
+    return access_state(user_id, is_unlimited)
 
 def refund_request(user_id: int):
     now = _now()
