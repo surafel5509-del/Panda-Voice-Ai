@@ -2,7 +2,7 @@
 
 Base URL: `https://panda-voice-ai-production.up.railway.app`
 
-All application endpoints require an API token in `X-API-Key`, except `GET /health` and the Telegram webhook. Create and revoke per-user API tokens through the Telegram **Developers** menu. Treat tokens as passwords.
+All application endpoints require an API token in `X-API-Key`, except `GET /health` and the Telegram webhook. Create and delete per-user API tokens through the Telegram **Developer Center** or authenticated token-management endpoints. Treat tokens as passwords.
 
 ## Authentication and errors
 
@@ -22,9 +22,11 @@ Errors use the standard JSON shape `{"detail":"..."}`. Common statuses: 401 inva
 - `GET /api/v1/account` — access tier, plan, shared daily usage, remaining requests and token expiry.
 - `GET /api/v1/limits` — active-token cap, shared quota and rate limits.
 - `GET /api/v1/plans` — Telegram Stars plan catalogue and configured prices.
-- `GET /api/v1/subscription` — current subscription and expiry.
+- `GET /api/v1/subscription` — current subscription and remaining requests.
+- `GET /api/v1/tokens` — list owned API token metadata (never returns token secrets).
+- `DELETE /api/v1/tokens/{token_id}` — revoke/delete an owned API token.
 
-Free accounts share **10 requests per UTC day** across Telegram AI Chat, Telegram speech generation, and authenticated API Chat/TTS. API token count does not multiply the account quota. Paid subscriptions have the configured paid daily limit (default 100). Owner/admin unlimited access bypasses the daily quota. Catalog lookups and session-management calls do not consume a request.
+Free accounts share **2 requests per UTC day** across Telegram AI Chat, Telegram speech generation, and authenticated API Chat/TTS. Paid allowances apply across the full purchased subscription period: Daily = 50 requests / 1 day, Weekly = 500 / 7 days, Monthly = 2,500 / 30 days. All API tokens for one account share the same allowance. Owner/admin unlimited access bypasses the daily quota. Catalog lookups and session-management calls do not consume a request.
 
 ## Speech
 
@@ -101,13 +103,7 @@ Sessions are isolated by API-token owner/account. Never share session IDs or API
 
 ## Telegram Stars subscriptions
 
-Daily, weekly and monthly plans are purchased through Telegram Stars invoices. Each purchase adds the plan duration to any active subscription. The current implementation is **manual renewal** (not recurring auto-charge). Plan prices must be configured by the owner in Railway:
-
-- `PANDA_PLAN_DAILY_STARS`
-- `PANDA_PLAN_WEEKLY_STARS`
-- `PANDA_PLAN_MONTHLY_STARS`
-
-A value of `0` disables that plan until a price is set. Paid daily request limit is controlled by `PANDA_SUBSCRIPTION_DAILY_LIMIT` (default 100). Prices are integer Star amounts. Telegram confirms payment; the backend verifies invoice payload, account, currency, and exact amount before activating a subscription.
+Daily, weekly and monthly plans are purchased through Telegram Stars invoices. Each purchase adds the plan duration to any active subscription. The current implementation is **manual renewal** (not recurring auto-charge). Default prices are Daily 100 Stars, Weekly 399 Stars, and Monthly 700 Stars. The included request allowances are 50, 500, and 2,500 respectively for each purchased period. Prices can be overridden in Railway using `PANDA_PLAN_DAILY_STARS`, `PANDA_PLAN_WEEKLY_STARS`, and `PANDA_PLAN_MONTHLY_STARS`. Telegram confirms payment; the backend verifies invoice payload, account, currency, and exact amount before activating a subscription.
 
 ## OpenAPI
 
