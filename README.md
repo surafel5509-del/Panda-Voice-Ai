@@ -11,6 +11,10 @@ Professional Telegram text-to-speech bot and private Android-facing REST API pow
 - Automatic style-aware voice ranking using the voice catalog's own tags.
 - Speed control (0.5x–2.0x).
 - MP3 playback and download in Telegram.
+- Developer menu with per-user API token creation, expiry, revocation and usage reporting.
+- Maximum 2 active API tokens per Telegram account; default 100 requests/day and 30 requests/minute.
+- Unlimited API access can be unlocked using the server-side `PANDA_UNLIMITED_CODE`.
+- Persistent SQLite token/account database stored on Railway volume `/data`.
 - Private Android REST API. Fish Audio credentials remain server-side.
 - No public Swagger page; API routes are not displayed in the Telegram bot.
 - HTTP request logging is suppressed to prevent Telegram bot tokens appearing in request URLs.
@@ -32,7 +36,10 @@ The Fish Audio API model `s2.1-pro-free` is separate from the consumer web subsc
 |---|---:|---|
 | `BOT_TOKEN` or `TELEGRAM_BOT_TOKEN` | For Telegram bot | — |
 | `FISH_AUDIO_API` or `FISH_API_KEY` | Yes | — |
-| `PANDA_API_KEY` | For Android API | — |
+| `PANDA_API_KEY` | Optional legacy master API key | — |
+| `PANDA_UNLIMITED_CODE` | Secret code to unlock per-user unlimited access | — |
+| `PANDA_DAILY_REQUEST_LIMIT` | Daily request limit per token | `100` |
+| `PANDA_DATABASE_PATH` | Persistent SQLite path | `/data/panda.sqlite3` |
 | `FISH_MODEL` | No | `s2.1-pro-free` |
 | `MAX_TEXT_CHARS` | No | `4000` |
 | `LOG_LEVEL` | No | `INFO` |
@@ -71,6 +78,15 @@ JSON body:
 Success: raw `audio/mpeg` bytes (MP3), not JSON.
 
 Supported style keys: `natural`, `story`, `podcast`, `voiceover`, `audiobook`, `news`, `documentary`, `meditation`, `energetic`, `whisper`, `empathetic`, `commercial`.
+
+### Additional endpoints
+
+- `GET /api/v1/voices/{voice_id}` — voice detail.
+- `GET /api/v1/account` — current token access and daily usage.
+- `GET /api/v1/limits` — request limits and text size.
+- `GET /api/v1/styles` and `GET /api/v1/engines` — catalogs.
+
+Each Telegram user can create at most 2 active API tokens from Developers. Tokens have 7, 30, 90 or 365 day expiry; unlimited users can choose never-expiring tokens. Tokens can be revoked in the bot. Token secrets are stored as SHA-256 hashes and shown only once.
 
 ### Health check
 
