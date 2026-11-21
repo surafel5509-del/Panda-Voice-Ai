@@ -5,6 +5,7 @@ import os
 import sqlite3
 import uuid
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -38,8 +39,21 @@ def _connect():
     return conn
 
 
+@contextmanager
+def _db():
+    conn = _connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def init_ai_chat_db():
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_chat_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -70,7 +84,7 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
         raise AIChatError("Invalid session_id.", 422)
 
     async with _session_locks[sid]:
-        with _connect() as conn:
+        with _db() as conn:
             row = conn.execute(
                 "SELECT owner_key, title, messages_json FROM ai_chat_sessions WHERE session_id=?",
                 (sid,),
