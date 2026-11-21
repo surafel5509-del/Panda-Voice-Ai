@@ -84,6 +84,15 @@ def create_pending_payment(user_id: int, plan_id: str):
     return {"payload": payload, "stars": plan["stars"], "name": plan["name"], "days": plan["days"]}
 
 
+def validate_pending_payment(user_id: int, payload: str, currency: str, total_amount: int):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT expected_stars FROM panda_pending_payments WHERE payload=? AND user_id=? AND status='pending'",
+            (payload, user_id),
+        ).fetchone()
+    return bool(row and currency == "XTR" and int(total_amount) == int(row["expected_stars"]))
+
+
 def activate_paid_subscription(user_id: int, payload: str, currency: str, total_amount: int, charge_id: str):
     now = _now()
     with _connect() as conn:
