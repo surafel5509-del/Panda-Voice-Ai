@@ -18,7 +18,7 @@ Security: a key embedded in an APK can be extracted. For a public app, have your
 
 ## 1. List voice models
 
-GET https://panda-voice-ai-production.up.railway.app/api/v1/voices?gender=female&style=story
+GET https://panda-voice-ai-production.up.railway.app/api/v1/voices?gender=female&style=story&page=1&page_size=20
 
 Query parameters:
 - gender: all, female, or male
@@ -39,12 +39,28 @@ Response example:
     }
   ],
   "count": 1,
+  "page": 1,
+  "page_size": 20,
+  "has_more": false,
   "gender": "female",
   "style": "story"
 }
 ```
 
-## 2. Generate MP3
+## 2. List speaking styles and supported engines
+
+- GET /api/v1/styles
+- GET /api/v1/engines
+
+Both require X-API-Key. The engine list identifies S2.1 Pro Free as free; the other engines may require Fish Audio API credit.
+
+## 3. Preview a voice or style
+
+POST https://panda-voice-ai-production.up.railway.app/api/v1/preview
+
+Use the same JSON body as the TTS endpoint. The response is audio/mpeg for preview playback.
+
+## 4. Generate MP3
 
 POST https://panda-voice-ai-production.up.railway.app/api/v1/tts
 
@@ -72,7 +88,7 @@ Limits:
 - text: 1 to the configured maximum character count
 - Response audio is not cached by the API.
 
-## 3. Kotlin + Retrofit
+## 5. Kotlin + Retrofit
 
 Gradle dependencies (use current stable versions in your project):
 
@@ -135,6 +151,13 @@ interface PandaVoiceApi {
         @Query("gender") gender: String = "all",
         @Query("style") style: String = "natural"
     ): VoiceResponse
+
+    @Streaming
+    @POST("api/v1/preview")
+    suspend fun preview(
+        @Header("X-API-Key") apiKey: String,
+        @Body request: TtsRequest
+    ): ResponseBody
 
     @Streaming
     @POST("api/v1/tts")
