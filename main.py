@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -9,7 +10,7 @@ from io import BytesIO
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -208,7 +209,8 @@ async def get_voices(gender: str = "all", force: bool = False) -> list[dict]:
 def best_voice(voices: list[dict], style: str) -> dict | None:
     if not voices:
         return None
-    return max(voices, key=lambda v: (style_score(v, style), len(v.get("languages", []))))
+    ranked = max(voices, key=lambda v: (style_score(v, style), len(v.get("languages", []))))
+    return ranked if style_score(ranked, style) > 0 else None
 
 
 async def require_api_key(x_api_key: str | None):
@@ -217,6 +219,14 @@ async def require_api_key(x_api_key: str | None):
     import secrets
     if not x_api_key or not secrets.compare_digest(x_api_key, PANDA_API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key.")
+    fingerprint = hashlib.sha256(x_api_key.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    window = api_rate[fingerprint]
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "30")):
+        raise HTTPException(status_code=429, detail="PANDA API rate limit exceeded. Retry in one minute.")
+    window.append(now)
 
 
 class TTSInput(BaseModel):
@@ -258,9 +268,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PANDA VOICE AI",
     version="2.0.0",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan,
 )
 
@@ -270,9 +280,32 @@ async def health():
     return {"status": "ok", "service": "PANDA VOICE AI"}
 
 
+@app.get("/api/v1/styles")
+async def api_styles(x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    return {"items": [
+        {"id": key, "name": value[0], "description": value[2]}
+        for key, value in STYLES.items()
+    ]}
+
+
+@app.get("/api/v1/engines")
+async def api_engines(x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    return {"default": FISH_MODEL, "items": [
+        {"id": "s2.1-pro-free", "name": "S2.1 Pro Free", "free": True},
+        {"id": "s2.1-pro", "name": "S2.1 Pro", "free": False},
+        {"id": "s2-pro", "name": "S2 Pro", "free": False},
+        {"id": "s1", "name": "S1 (legacy)", "free": False},
+    ]}
+
+
 @app.get("/api/v1/voices")
 async def api_voices(gender: Literal["all", "female", "male"] = "all",
-                     style: str = "natural", x_api_key: str | None = Header(default=None)):
+                     style: str = "natural",
+                     page: int = Query(default=1, ge=1, le=100),
+                     page_size: int = Query(default=20, ge=1, le=50),
+                     x_api_key: str | None = Header(default=None)):
     await require_api_key(x_api_key)
     if style not in STYLES:
         raise HTTPException(status_code=422, detail="Unsupported speaking style.")
@@ -280,7 +313,29 @@ async def api_voices(gender: Literal["all", "female", "male"] = "all",
     for voice in voices:
         voice["style_match"] = style_score(voice, style)
     voices.sort(key=lambda v: (v["style_match"], v["name"].lower()), reverse=True)
-    return {"items": voices, "count": len(voices), "gender": gender, "style": style}
+    start = (page - 1) * page_size
+    return {
+        "items": voices[start:start + page_size],
+        "count": len(voices),
+        "page": page,
+        "page_size": page_size,
+        "has_more": start + page_size < len(voices),
+        "gender": gender,
+        "style": style,
+    }
+
+
+@app.post("/api/v1/preview")
+async def api_preview(payload: TTSInput, x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    audio = await fish_tts(payload.text.strip(), payload.voice_id, payload.style,
+                           payload.speed, payload.volume)
+    return Response(
+        content=audio,
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": 'inline; filename="panda-preview.mp3"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/v1/tts")
