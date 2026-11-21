@@ -12,11 +12,11 @@ Professional Telegram text-to-speech bot and private Android-facing REST API pow
 - Speed control (0.5x–2.0x).
 - MP3 playback and download in Telegram.
 - Developer menu with per-user API token creation, expiry, revocation and usage reporting.
-- Maximum 2 active API tokens per Telegram account; default 100 requests/day and 30 requests/minute.
+- Maximum 5 active API tokens per Telegram account; 30 requests/minute by default. Free tier: 2 requests/day. Paid allowances: 50 / 500 / 2,500 requests per daily / weekly / monthly plan.
 - Unlimited API access can be unlocked using the server-side `PANDA_UNLIMITED_CODE`.
 - Persistent SQLite token/account database stored on Railway volume `/data`.
 - Private Android REST API. Fish Audio credentials remain server-side.
-- No public Swagger page; API routes are not displayed in the Telegram bot.
+- Interactive Swagger API documentation at `/docs`; newly created tokens display Voice and AI Chat endpoints with ready-to-use examples.
 - HTTP request logging is suppressed to prevent Telegram bot tokens appearing in request URLs.
 
 ## Fish Audio implementation
@@ -38,7 +38,7 @@ The Fish Audio API model `s2.1-pro-free` is separate from the consumer web subsc
 | `FISH_AUDIO_API` or `FISH_API_KEY` | Yes | — |
 | `PANDA_API_KEY` | Optional legacy master API key | — |
 | `PANDA_UNLIMITED_CODE` | Secret code to unlock per-user unlimited access | — |
-| `PANDA_DAILY_REQUEST_LIMIT` | Daily request limit per token | `100` |
+| `PANDA_DAILY_REQUEST_LIMIT` | Free account requests per UTC day | `2` |
 | `PANDA_DATABASE_PATH` | Persistent SQLite path | `/data/panda.sqlite3` |
 | `FISH_MODEL` | No | `s2.1-pro-free` |
 | `MAX_TEXT_CHARS` | No | `4000` |
@@ -86,7 +86,7 @@ Supported style keys: `natural`, `story`, `podcast`, `voiceover`, `audiobook`, `
 - `GET /api/v1/limits` — request limits and text size.
 - `GET /api/v1/styles` and `GET /api/v1/engines` — catalogs.
 
-Each Telegram user can create at most 2 active API tokens from Developers. Tokens have 7, 30, 90 or 365 day expiry; unlimited users can choose never-expiring tokens. Tokens can be revoked in the bot. Token secrets are stored as SHA-256 hashes and shown only once.
+Each Telegram user can create at most 5 active API tokens from Developer Center. Tokens have 7, 30, 90 or 365 day expiry; unlimited users can choose never-expiring tokens. Tokens can be revoked in the bot. Token secrets are stored as SHA-256 hashes and shown only once.
 
 ### Health check
 
@@ -202,11 +202,20 @@ The service does not return private reasoning traces. It only returns the assist
 ## Shared quota, subscriptions and languages
 
 - Telegram AI Chat, Telegram TTS and authenticated API Chat/TTS now use one shared per-account daily quota.
-- Free tier defaults to 10 combined requests per UTC day.
-- Paid subscriptions default to 100 combined requests/day; set `PANDA_SUBSCRIPTION_DAILY_LIMIT` to change this.
-- Daily, weekly and monthly plans use Telegram Stars invoices. Configure their integer Star prices with `PANDA_PLAN_DAILY_STARS`, `PANDA_PLAN_WEEKLY_STARS` and `PANDA_PLAN_MONTHLY_STARS`. A value of `0` disables checkout for that plan until priced.
+- Free tier allows 2 combined requests per UTC day.
+- Paid plan allowances: Daily 50 requests / 1 day, Weekly 500 / 7 days, Monthly 2,500 / 30 days.
+- Daily, weekly and monthly plans use Telegram Stars invoices. Configure their integer Star prices with `PANDA_PLAN_DAILY_STARS`, `PANDA_PLAN_WEEKLY_STARS` and `PANDA_PLAN_MONTHLY_STARS`. Default Stars prices are Daily 100, Weekly 399, Monthly 700.
 - Payments are one-time purchases with manual renewal; automatic recurring billing is not enabled.
 - AI Chat supports English, Arabic, Spanish and Classical Latin response modes.
 - Added `POST /api/v1/chat/completions`, `GET /api/v1/plans` and `GET /api/v1/subscription`.
 
 See [API.md](API.md) for the complete endpoint reference, request examples, quota rules and payment lifecycle.
+
+
+## Developer Center and token management
+
+Creating an API token displays the Base URL, all Voice and AI Chat endpoints, Swagger docs and a copy-ready AI Chat request. Tokens can be deleted in Telegram or with `DELETE /api/v1/tokens/{token_id}`. Token secrets are displayed only once.
+
+Telegram's native command menu includes `/start`, `/menu`, `/chat`, `/newchat`, `/chatex`, `/plans`, `/language`, `/settings`, `/developers`, `/help` and `/cancel`.
+
+Free users can make 2 combined AI Chat + Voice requests per UTC day and change style/model twice per day. Paid subscribers can switch styles and speech models freely.
