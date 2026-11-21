@@ -24,6 +24,11 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
+from ai_chat import (
+    AIChatError, chat_completion, delete_chat_session, init_ai_chat_db,
+    list_chat_sessions,
+)
+
 # Never log HTTP request URLs: Telegram bot URLs contain the bot token.
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -38,6 +43,7 @@ FISH_API_KEY = (os.getenv("FISH_API_KEY") or os.getenv("FISH_AUDIO_API") or "").
 PANDA_API_KEY = os.getenv("PANDA_API_KEY", "").strip()
 FISH_MODEL = os.getenv("FISH_MODEL", "s2.1-pro-free").strip()
 MAX_TEXT_CHARS = min(max(int(os.getenv("MAX_TEXT_CHARS", "4000")), 100), 10000)
+MAX_AI_CHAT_CHARS = min(max(int(os.getenv("MAX_AI_CHAT_CHARS", "6000")), 100), 10000)
 FISH_BASE = "https://api.fish.audio"
 MODEL_PAGE_SIZE = 100
 VOICE_MAX_PAGES = 10
@@ -353,7 +359,7 @@ async def require_api_key(x_api_key: str | None):
     window.append(now_mono)
 
     if PANDA_API_KEY and secrets.compare_digest(x_api_key, PANDA_API_KEY):
-        return {"user_id": None, "unlimited": True, "master": True}
+        return {"user_id": None, "unlimited": True, "master": True, "owner_key": "master:" + fingerprint}
     with db_session() as conn:
         row = conn.execute(
             "SELECT t.*, u.unlimited AS user_unlimited FROM api_tokens t "
@@ -373,7 +379,13 @@ async def require_api_key(x_api_key: str | None):
             "UPDATE api_tokens SET usage_day=?, usage_count=?, last_used_at=? WHERE id=?",
             (day, count + 1, now.isoformat(), row["id"]))
         return {"user_id": row["user_id"], "token_id": row["id"],
-                "unlimited": unlimited, "master": False, "daily_used": count + 1}
+                "unlimited": unlimited, "master": False, "daily_used": count + 1,
+                "owner_key": "telegram-user:" + str(row["user_id"])}
+
+
+class ChatInput(BaseModel):
+    message: str = Field(min_length=1, max_length=MAX_AI_CHAT_CHARS)
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 class TTSInput(BaseModel):
@@ -390,10 +402,14 @@ class TTSInput(BaseModel):
 async def lifespan(app: FastAPI):
     global telegram_app
     init_db()
+    init_ai_chat_db()
     if BOT_TOKEN:
         telegram_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("help", help_command))
+        telegram_app.add_handler(CommandHandler("chat", ai_chat_command))
+        telegram_app.add_handler(CommandHandler("newchat", new_chat_command))
+        telegram_app.add_handler(CommandHandler("chatex", exit_chat_command))
         telegram_app.add_handler(CommandHandler("settings", settings_command))
         telegram_app.add_handler(CommandHandler("cancel", cancel))
         telegram_app.add_handler(CallbackQueryHandler(on_button))
@@ -429,7 +445,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PANDA VOICE AI",
-    version="3.0.0",
+    version="3.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -439,7 +455,7 @@ app = FastAPI(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "PANDA VOICE AI", "version": "3.0.0", "database": os.path.exists(DB_PATH)}
+    return {"status": "ok", "service": "PANDA VOICE AI", "version": "3.1.0", "database": os.path.exists(DB_PATH)}
 
 
 @app.post("/telegram/webhook")
@@ -564,9 +580,38 @@ async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None
     )
 
 
+@app.post("/api/v1/chat")
+async def api_chat(payload: ChatInput, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    try:
+        return await chat_completion(account["owner_key"], payload.message, payload.session_id)
+    except AIChatError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@app.get("/api/v1/chat/sessions")
+async def api_chat_sessions(limit: int = Query(default=20, ge=1, le=50),
+                            x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    return {"items": list_chat_sessions(account["owner_key"], limit)}
+
+
+@app.delete("/api/v1/chat/sessions/{session_id}")
+async def api_delete_chat_session(session_id: str, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    try:
+        deleted = delete_chat_session(account["owner_key"], session_id)
+    except AIChatError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    return {"deleted": True, "session_id": session_id}
+
+
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✨ Create Speech", callback_data="create")],
+        [InlineKeyboardButton("🤖 AI Chat", callback_data="ai_chat")],
         [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"),
          InlineKeyboardButton("🎭 Speaking Styles", callback_data="styles")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
@@ -614,8 +659,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. Preview any voice before selecting it.\n"
         "3. Choose a speaking style and preview that style.\n"
         "4. Tap Create Speech and send your text.\n"
-        "5. Receive an MP3 you can play or download.\n\n"
-        "Commands: /start /settings /cancel /help",
+        "5. Receive an MP3 you can play or download.\n"
+        "6. Tap AI Chat or send /chat to talk with the AI assistant.\n\n"
+        "AI chat commands: /chat /newchat /chatex\n"
+        "Other commands: /start /settings /cancel /help",
         reply_markup=main_keyboard(),
     )
 
@@ -652,7 +699,7 @@ async def show_voices(chat, context, gender: str, page: int = 0):
     try:
         voices = await get_voices(gender)
     except HTTPException as exc:
-        await chat.reply_text(f"Voice library unavailable: {exc.detail}", reply_markup=main_keyboard())
+        await chat.send_message(f"Voice library unavailable: {exc.detail}", reply_markup=main_keyboard())
         return
     context.user_data["voice_page_gender"] = gender
     page_size = 8
@@ -660,7 +707,7 @@ async def show_voices(chat, context, gender: str, page: int = 0):
     page = min(max(0, page), max_page)
     context.user_data["voice_page"] = page
     if not voices:
-        await chat.reply_text(
+        await chat.send_message(
             f"No publicly listed {gender} voices with clear gender tags were returned by Fish Audio. "
             "Choose the other category or try again later.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="voices")]]),
@@ -682,7 +729,7 @@ async def show_voices(chat, context, gender: str, page: int = 0):
         rows.append(nav)
     rows.append([InlineKeyboardButton("⬅️ Gender", callback_data="voices"),
                  InlineKeyboardButton("🏠 Home", callback_data="home")])
-    await chat.reply_text(
+    await chat.send_message(
         f"🎙 {gender.upper()} VOICES · Page {page + 1}/{max_page + 1}\n"
         "Preview a voice before selecting it. Voices are loaded from the public Fish Audio library.",
         reply_markup=InlineKeyboardMarkup(rows),
@@ -694,13 +741,13 @@ async def show_styles(chat, context):
         rows.append([InlineKeyboardButton(f"{label} · {description}", callback_data=f"style:{key}")])
     rows.append([InlineKeyboardButton("▶ Preview Current Style", callback_data="stylepreview")])
     rows.append([InlineKeyboardButton("⬅️ Main Menu", callback_data="home")])
-    await chat.reply_text("🎭 SPEAKING STYLES\nChoose a delivery style. Preview it with your selected voice.",
+    await chat.send_message("🎭 SPEAKING STYLES\nChoose a delivery style. Preview it with your selected voice.",
                           reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def send_preview(chat, context, voice: dict, style: str = "natural"):
     if user_locks[chat.id].locked():
-        await chat.reply_text("A generation is already running. Please wait.")
+        await chat.send_message("A generation is already running. Please wait.")
         return
     async with user_locks[chat.id]:
         status = await chat.send_message("🎧 Preparing your voice preview…")
@@ -729,6 +776,24 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "home":
         context.user_data["waiting_text"] = False
         await query.message.reply_text(home_text(context), reply_markup=main_keyboard())
+    elif data == "ai_chat":
+        context.user_data["waiting_text"] = False
+        context.user_data["ai_chat_active"] = True
+        await query.message.reply_text(
+            "🤖 PANDA AI CHAT is ready. Send a message to start.\n"
+            "Use /newchat to clear this conversation or /chatex to exit.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🆕 New conversation", callback_data="ai_new")],
+                [InlineKeyboardButton("⬅️ Exit AI Chat", callback_data="ai_exit")],
+            ]),
+        )
+    elif data == "ai_new":
+        context.user_data["ai_chat_active"] = True
+        context.user_data["ai_chat_session_id"] = None
+        await query.message.reply_text("🆕 New AI conversation started. Send your message.")
+    elif data == "ai_exit":
+        context.user_data["ai_chat_active"] = False
+        await query.message.reply_text("AI Chat closed.", reply_markup=main_keyboard())
     elif data == "create":
         if not selected_voice(context):
             await query.message.reply_text("Please choose a voice first.", reply_markup=InlineKeyboardMarkup(
@@ -906,6 +971,30 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+async def ai_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["waiting_text"] = False
+    context.user_data["ai_chat_active"] = True
+    await update.effective_message.reply_text(
+        "🤖 PANDA AI CHAT is ready. Send a message to start.\n"
+        "Use /newchat to clear this conversation or /chatex to exit.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🆕 New conversation", callback_data="ai_new")],
+            [InlineKeyboardButton("⬅️ Exit AI Chat", callback_data="ai_exit")],
+        ]),
+    )
+
+
+async def new_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ai_chat_active"] = True
+    context.user_data["ai_chat_session_id"] = None
+    await update.effective_message.reply_text("🆕 New AI conversation started. Send your message.")
+
+
+async def exit_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["ai_chat_active"] = False
+    await update.effective_message.reply_text("AI Chat closed.", reply_markup=main_keyboard())
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
     await update.effective_message.reply_text("Text entry cancelled.", reply_markup=main_keyboard())
@@ -913,6 +1002,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
+    if context.user_data.get("ai_chat_active"):
+        if not text:
+            return
+        status = await update.effective_message.reply_text("🤖 Thinking…")
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            result = await chat_completion(
+                "telegram:" + str(update.effective_user.id),
+                text,
+                context.user_data.get("ai_chat_session_id"),
+            )
+            context.user_data["ai_chat_session_id"] = result["session_id"]
+            await status.delete()
+            answer = result["reply"]
+            for offset in range(0, len(answer), 4000):
+                await update.effective_message.reply_text(answer[offset:offset + 4000])
+        except AIChatError as exc:
+            await status.edit_text(str(exc))
+        except Exception:
+            log.exception("Telegram AI Chat request failed")
+            await status.edit_text("AI Chat failed unexpectedly. Please try again.")
+        return
     if context.user_data.pop("waiting_api_name", False):
         if not text or len(text) > 48:
             await update.effective_message.reply_text("Name must be between 1 and 48 characters. Tap Create API Token again.")
