@@ -19,8 +19,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("panda-voice-ai")
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-FISH_API_KEY = os.getenv("FISH_API_KEY", "").strip()
+# Accept both the documented names and existing project-level Railway names.
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+FISH_API_KEY = (os.getenv("FISH_API_KEY") or os.getenv("FISH_AUDIO_API") or "").strip()
 FISH_MODEL = os.getenv("FISH_MODEL", "s2.1-pro-free").strip()
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "3500"))
 MAX_PARALLEL_PER_USER = 1
@@ -130,7 +131,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.split(":", 1)[1]
         if key in VOICES:
             context.user_data["voice"] = key
-        await query.message.reply_text(f"✅ የተመረጠው: {VOICES[key][0]}", reply_markup=main_menu())
+            await query.message.reply_text(f"✅ የተመረጠው: {VOICES[key][0]}", reply_markup=main_menu())
     elif data == "styles":
         rows = [[InlineKeyboardButton(label, callback_data=f"style:{key}")]
                 for key, (label, _) in STYLES.items()]
@@ -141,7 +142,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key = data.split(":", 1)[1]
         if key in STYLES:
             context.user_data["style"] = key
-        await query.message.reply_text(f"✅ የተመረጠው: {STYLES[key][0]}", reply_markup=main_menu())
+            await query.message.reply_text(f"✅ የተመረጠው: {STYLES[key][0]}", reply_markup=main_menu())
     elif data == "settings":
         await query.message.reply_text(settings_text(context), parse_mode="Markdown",
                                        reply_markup=main_menu())
@@ -181,7 +182,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not FISH_API_KEY:
         await update.effective_message.reply_text(
-            "⚠️ Fish Audio API Key አልተዋቀረም። Railway Variables ውስጥ FISH_API_KEY ያስገቡ።"
+            "⚠️ Fish Audio API Key አልተዋቀረም። Railway Variables ውስጥ FISH_API_KEY ወይም FISH_AUDIO_API ያስገቡ።"
         )
         return
     if user_locks[user_id].locked():
@@ -217,7 +218,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 detail = response.text[:600]
                 log.warning("Fish Audio returned %s: %s", response.status_code, detail)
                 if response.status_code == 401:
-                    msg = "API Key ትክክል አይደለም። FISH_API_KEY ያረጋግጡ።"
+                    msg = "API Key ትክክል አይደለም። FISH_API_KEY / FISH_AUDIO_API ያረጋግጡ።"
                 elif response.status_code == 402:
                     msg = "የAPI ክሬዲት አልበቃም። FISH_MODEL=s2.1-pro-free መሆኑን ያረጋግጡ።"
                 elif response.status_code == 429:
@@ -263,7 +264,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN environment variable")
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN (or BOT_TOKEN) environment variable")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
