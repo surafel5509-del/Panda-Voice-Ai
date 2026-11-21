@@ -17,16 +17,21 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes,
-    MessageHandler, filters,
+    MessageHandler, PreCheckoutQueryHandler, filters,
 )
 
 from ai_chat import (
     AIChatError, chat_completion, delete_chat_session, init_ai_chat_db,
     list_chat_sessions,
+)
+from billing import (
+    activate_paid_subscription, access_state, consume_request, create_pending_payment,
+    current_subscription, init_billing_db, plan_catalog, refund_request,
+    validate_pending_payment,
 )
 
 # Never log HTTP request URLs: Telegram bot URLs contain the bot token.
@@ -49,7 +54,7 @@ MODEL_PAGE_SIZE = 100
 VOICE_MAX_PAGES = 10
 DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
 PANDA_UNLIMITED_CODE = os.getenv("PANDA_UNLIMITED_CODE", "")
-DAILY_REQUEST_LIMIT = max(1, int(os.getenv("PANDA_DAILY_REQUEST_LIMIT", "100")))
+DAILY_REQUEST_LIMIT = max(1, int(os.getenv("PANDA_DAILY_REQUEST_LIMIT", "10")))
 
 # These are S2 natural-language direction prompts, not imaginary API style fields.
 STYLES = {
@@ -195,7 +200,6 @@ def unlock_user_unlimited(user_id: int):
     with db_session() as conn:
         ensure_user(conn, user_id)
         conn.execute("UPDATE panda_users SET unlimited=1 WHERE user_id=?", (user_id,))
-
 
 
 def fish_headers(model: str | None = None) -> dict:
@@ -373,8 +377,6 @@ async def require_api_key(x_api_key: str | None):
         unlimited = bool(row["user_unlimited"])
         day = now.date().isoformat()
         count = row["usage_count"] if row["usage_day"] == day else 0
-        if not unlimited and count >= DAILY_REQUEST_LIMIT:
-            raise HTTPException(status_code=429, detail=f"Daily API limit reached ({DAILY_REQUEST_LIMIT}/day).")
         conn.execute(
             "UPDATE api_tokens SET usage_day=?, usage_count=?, last_used_at=? WHERE id=?",
             (day, count + 1, now.isoformat(), row["id"]))
@@ -386,6 +388,18 @@ async def require_api_key(x_api_key: str | None):
 class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_AI_CHAT_CHARS)
     session_id: str | None = Field(default=None, max_length=64)
+    language: Literal["en", "ar", "es", "la"] | None = None
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user"]
+    content: str = Field(min_length=1, max_length=MAX_AI_CHAT_CHARS)
+
+
+class ChatCompletionsInput(BaseModel):
+    messages: list[ChatMessage] = Field(min_length=1, max_length=1)
+    session_id: str | None = Field(default=None, max_length=64)
+    language: Literal["en", "ar", "es", "la"] | None = None
 
 
 class TTSInput(BaseModel):
@@ -397,12 +411,12 @@ class TTSInput(BaseModel):
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     volume: float = Field(default=0.0, ge=-20.0, le=20.0)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global telegram_app
     init_db()
     init_ai_chat_db()
+    init_billing_db()
     if BOT_TOKEN:
         telegram_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         telegram_app.add_handler(CommandHandler("start", start))
@@ -410,8 +424,13 @@ async def lifespan(app: FastAPI):
         telegram_app.add_handler(CommandHandler("chat", ai_chat_command))
         telegram_app.add_handler(CommandHandler("newchat", new_chat_command))
         telegram_app.add_handler(CommandHandler("chatex", exit_chat_command))
+        telegram_app.add_handler(CommandHandler("menu", menu_command))
+        telegram_app.add_handler(CommandHandler("plans", plans_command))
+        telegram_app.add_handler(CommandHandler("language", language_command))
         telegram_app.add_handler(CommandHandler("settings", settings_command))
         telegram_app.add_handler(CommandHandler("cancel", cancel))
+        telegram_app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+        telegram_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
         telegram_app.add_handler(CallbackQueryHandler(on_button))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
         await telegram_app.initialize()
@@ -485,15 +504,18 @@ async def api_account(x_api_key: str | None = Header(default=None)):
         row = conn.execute("SELECT usage_count,usage_day,expires_at,name FROM api_tokens WHERE id=?",
                            (account["token_id"],)).fetchone()
     used = row["usage_count"] if row["usage_day"] == utc_now().date().isoformat() else 0
-    return {"token_name": row["name"], "access": "unlimited" if account["unlimited"] else "standard",
-            "daily_limit": None if account["unlimited"] else DAILY_REQUEST_LIMIT,
-            "usage_today": used, "expires_at": row["expires_at"]}
+    quota = access_state(account["user_id"], account["unlimited"])
+    return {"token_name": row["name"], **quota, "token_usage_today": used,
+            "token_expires_at": row["expires_at"]}
 
 
 @app.get("/api/v1/limits")
 async def api_limits(x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
-    return {"max_active_tokens": 2, "daily_request_limit": None if account["unlimited"] else DAILY_REQUEST_LIMIT,
+    quota = access_state(account["user_id"], account["unlimited"]) if account["user_id"] is not None else {
+        "access": "unlimited", "daily_limit": None, "used_today": None, "remaining_today": None
+    }
+    return {"max_active_tokens": 2, **quota,
             "per_minute_limit": int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "30")),
             "max_text_chars": MAX_TEXT_CHARS, "token_expiry_required": not account["unlimited"]}
 
@@ -569,9 +591,20 @@ async def api_preview(payload: TTSInput, x_api_key: str | None = Header(default=
 
 @app.post("/api/v1/tts")
 async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None)):
-    await require_api_key(x_api_key)
-    audio = await fish_tts(payload.text.strip(), payload.voice_id, payload.style,
-                           payload.speed, payload.volume)
+    account = await require_api_key(x_api_key)
+    reserved = account["user_id"] is not None
+    if reserved:
+        try:
+            consume_request(account["user_id"], account["unlimited"])
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+    try:
+        audio = await fish_tts(payload.text.strip(), payload.voice_id, payload.style,
+                               payload.speed, payload.volume)
+    except Exception:
+        if reserved:
+            refund_request(account["user_id"])
+        raise
     return Response(
         content=audio,
         media_type="audio/mpeg",
@@ -583,10 +616,55 @@ async def api_tts(payload: TTSInput, x_api_key: str | None = Header(default=None
 @app.post("/api/v1/chat")
 async def api_chat(payload: ChatInput, x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
+    reserved = account["user_id"] is not None
+    if reserved:
+        try:
+            consume_request(account["user_id"], account["unlimited"])
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
     try:
-        return await chat_completion(account["owner_key"], payload.message, payload.session_id)
+        return await chat_completion(account["owner_key"], payload.message, payload.session_id, payload.language)
     except AIChatError as exc:
+        if reserved:
+            refund_request(account["user_id"])
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@app.post("/api/v1/chat/completions")
+async def api_chat_completions(payload: ChatCompletionsInput, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    reserved = account["user_id"] is not None
+    if reserved:
+        try:
+            consume_request(account["user_id"], account["unlimited"])
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+    try:
+        result = await chat_completion(account["owner_key"], payload.messages[-1].content, payload.session_id, payload.language)
+    except AIChatError as exc:
+        if reserved:
+            refund_request(account["user_id"])
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    return {
+        "id": "chatcmpl-" + result["session_id"].replace("-", "")[:24],
+        "object": "chat.completion", "model": result["model"],
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": result["reply"]}, "finish_reason": "stop"}],
+        "usage": result.get("usage") or {}, "session_id": result["session_id"],
+    }
+
+
+@app.get("/api/v1/plans")
+async def api_plans(x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    return {"currency": "XTR", "items": plan_catalog(), "note": "Telegram Stars plans are one-time purchases; users renew manually."}
+
+
+@app.get("/api/v1/subscription")
+async def api_subscription(x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    if account["user_id"] is None:
+        return {"access": "unlimited", "plan": "master"}
+    return {**access_state(account["user_id"], account["unlimited"]), "subscription": current_subscription(account["user_id"])}
 
 
 @app.get("/api/v1/chat/sessions")
@@ -610,14 +688,12 @@ async def api_delete_chat_session(session_id: str, x_api_key: str | None = Heade
 
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Create Speech", callback_data="create")],
-        [InlineKeyboardButton("🤖 AI Chat", callback_data="ai_chat")],
-        [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"),
-         InlineKeyboardButton("🎭 Speaking Styles", callback_data="styles")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-         InlineKeyboardButton("🕘 Recent", callback_data="history")],
+        [InlineKeyboardButton("✨ Create Speech", callback_data="create"), InlineKeyboardButton("🤖 AI Chat", callback_data="ai_chat")],
+        [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"), InlineKeyboardButton("🎭 Speaking Styles", callback_data="styles")],
+        [InlineKeyboardButton("⭐ Plans", callback_data="plans"), InlineKeyboardButton("🌐 Language", callback_data="language")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"), InlineKeyboardButton("🕘 Recent", callback_data="history")],
         [InlineKeyboardButton("👨‍💻 Developers", callback_data="developers")],
-        [InlineKeyboardButton("❔ Help", callback_data="help")],
+        [InlineKeyboardButton("📋 Menu", callback_data="home"), InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
 
 
@@ -640,7 +716,8 @@ def home_text(context) -> str:
         f"🎙 Voice: {voice_name}\n"
         f"🎭 Style: {STYLES[style][0]}\n"
         f"⚡ Speed: {context.user_data.get('speed', 1.0):.1f}x\n\n"
-        "Choose an action below to get started."
+        "Choose an action below to get started.\n"
+        "Free access: 10 shared Chat + Voice requests per day. Use ⭐ Plans to upgrade."
     )
 
 
@@ -648,6 +725,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("style", "natural")
     context.user_data.setdefault("speed", 1.0)
     context.user_data.setdefault("gender", "female")
+    context.user_data["waiting_text"] = False
+    await update.effective_message.reply_text(home_text(context), reply_markup=main_keyboard())
+
+
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
     await update.effective_message.reply_text(home_text(context), reply_markup=main_keyboard())
 
@@ -662,7 +744,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "5. Receive an MP3 you can play or download.\n"
         "6. Tap AI Chat or send /chat to talk with the AI assistant.\n\n"
         "AI chat commands: /chat /newchat /chatex\n"
-        "Other commands: /start /settings /cancel /help",
+        "Other commands: /start /menu /plans /language /settings /cancel /help",
         reply_markup=main_keyboard(),
     )
 
@@ -768,6 +850,56 @@ async def send_preview(chat, context, voice: dict, style: str = "natural"):
             await status.edit_text("Preview failed. Please try again.")
 
 
+async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "⭐ PANDA SUBSCRIPTION PLANS\nDaily, weekly and monthly access. Paid plans include up to "
+        f"{int(os.getenv('PANDA_SUBSCRIPTION_DAILY_LIMIT', '100'))} combined Chat + Voice requests per day.\n"
+        "Choose a plan below. Payment is processed with Telegram Stars.",
+        reply_markup=plans_keyboard(),
+    )
+
+
+def plans_keyboard():
+    rows = []
+    for plan in plan_catalog():
+        label = f"{plan['name']} · {plan['stars']} ⭐" if plan["available"] else f"{plan['name']} · Price not configured"
+        rows.append([InlineKeyboardButton(label, callback_data=f"plan:{plan['id']}" if plan["available"] else "noop")])
+    rows.append([InlineKeyboardButton("⬅️ Main Menu", callback_data="home")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "🌐 Choose the language for AI Chat responses:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("English", callback_data="lang:en")],
+            [InlineKeyboardButton("العربية · Arabic", callback_data="lang:ar")],
+            [InlineKeyboardButton("Español · Spanish", callback_data="lang:es")],
+            [InlineKeyboardButton("Lingua Latina · Latin", callback_data="lang:la")],
+            [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
+        ]),
+    )
+
+
+async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    valid = validate_pending_payment(query.from_user.id, query.invoice_payload, query.currency, query.total_amount)
+    await query.answer(ok=valid, error_message=None if valid else "This invoice is invalid. Please create a new one.")
+
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.effective_message.successful_payment
+    activated = activate_paid_subscription(update.effective_user.id, payment.invoice_payload, payment.currency,
+                                           payment.total_amount, payment.telegram_payment_charge_id)
+    if not activated:
+        log.error("Telegram Stars payment could not be reconciled user_id=%s", update.effective_user.id)
+        await update.effective_message.reply_text("Payment received but activation needs support review. Keep your Telegram receipt and contact support.")
+        return
+    await update.effective_message.reply_text(
+        f"✅ {activated['plan_id'].title()} plan activated until {activated['expires_at'][:10]} UTC.\n"
+        "Renewal is manual; automatic recurring billing is not enabled.", reply_markup=main_keyboard())
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -776,6 +908,24 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "home":
         context.user_data["waiting_text"] = False
         await query.message.reply_text(home_text(context), reply_markup=main_keyboard())
+    elif data == "plans":
+        await query.message.reply_text("⭐ Choose a subscription plan:", reply_markup=plans_keyboard())
+    elif data.startswith("plan:"):
+        try:
+            invoice = create_pending_payment(query.from_user.id, data.split(":", 1)[1])
+            await context.bot.send_invoice(chat_id=query.message.chat_id, title=f"PANDA {invoice['name']} plan",
+                description=f"{invoice['days']} days of paid Panda Voice AI access.", payload=invoice["payload"],
+                provider_token="", currency="XTR", prices=[LabeledPrice(label=f"{invoice['name']} access", amount=invoice["stars"])])
+        except ValueError as exc:
+            await query.message.reply_text(str(exc), reply_markup=plans_keyboard())
+    elif data == "language":
+        await language_command(update, context)
+    elif data.startswith("lang:"):
+        language = data.split(":", 1)[1]
+        if language in ("en", "ar", "es", "la"):
+            context.user_data["ai_language"] = language
+            names = {"en": "English", "ar": "Arabic", "es": "Spanish", "la": "Latin"}
+            await query.message.reply_text(f"✅ AI Chat language set to {names[language]}.", reply_markup=main_keyboard())
     elif data == "ai_chat":
         context.user_data["waiting_text"] = False
         context.user_data["ai_chat_active"] = True
@@ -999,7 +1149,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
     await update.effective_message.reply_text("Text entry cancelled.", reply_markup=main_keyboard())
 
-
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
     if context.user_data.get("ai_chat_active"):
@@ -1008,10 +1157,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = await update.effective_message.reply_text("🤖 Thinking…")
         try:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            consume_request(update.effective_user.id)
             result = await chat_completion(
-                "telegram-user:" + str(update.effective_user.id),
-                text,
-                context.user_data.get("ai_chat_session_id"),
+                "telegram-user:" + str(update.effective_user.id), text,
+                context.user_data.get("ai_chat_session_id"), context.user_data.get("ai_language"),
             )
             context.user_data["ai_chat_session_id"] = result["session_id"]
             await status.delete()
@@ -1019,8 +1168,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for offset in range(0, len(answer), 4000):
                 await update.effective_message.reply_text(answer[offset:offset + 4000])
         except AIChatError as exc:
+            refund_request(update.effective_user.id)
+            await status.edit_text(str(exc))
+        except ValueError as exc:
             await status.edit_text(str(exc))
         except Exception:
+            refund_request(update.effective_user.id)
             log.exception("Telegram AI Chat request failed")
             await status.edit_text("AI Chat failed unexpectedly. Please try again.")
         return
@@ -1076,6 +1229,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = await update.effective_message.reply_text("🎧 Generating your speech…")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         try:
+            consume_request(user_id)
             audio = await fish_tts(text, voice["id"], style, speed, 0.0)
             file = BytesIO(audio)
             file.name = "panda-voice.mp3"
@@ -1088,9 +1242,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text("✅ Your MP3 is ready. Play it or download it below.",
                                                        reply_markup=main_keyboard())
         except HTTPException as exc:
+            refund_request(user_id)
             await status.edit_text(f"Generation failed: {exc.detail}")
             context.user_data["waiting_text"] = True
+        except ValueError as exc:
+            await status.edit_text(str(exc))
+            context.user_data["waiting_text"] = True
         except Exception:
+            refund_request(user_id)
             log.exception("Telegram TTS generation failed")
             await status.edit_text("Something went wrong. Please try again.")
             context.user_data["waiting_text"] = True

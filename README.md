@@ -197,3 +197,16 @@ print(follow_up.json()["reply"])
 - `DELETE /api/v1/chat/sessions/{session_id}` — delete one of the authenticated owner's sessions.
 
 The service does not return private reasoning traces. It only returns the assistant's user-facing answer, model name and provider usage metadata.
+
+
+## Shared quota, subscriptions and languages
+
+- Telegram AI Chat, Telegram TTS and authenticated API Chat/TTS now use one shared per-account daily quota.
+- Free tier defaults to 10 combined requests per UTC day.
+- Paid subscriptions default to 100 combined requests/day; set `PANDA_SUBSCRIPTION_DAILY_LIMIT` to change this.
+- Daily, weekly and monthly plans use Telegram Stars invoices. Configure their integer Star prices with `PANDA_PLAN_DAILY_STARS`, `PANDA_PLAN_WEEKLY_STARS` and `PANDA_PLAN_MONTHLY_STARS`. A value of `0` disables checkout for that plan until priced.
+- Payments are one-time purchases with manual renewal; automatic recurring billing is not enabled.
+- AI Chat supports English, Arabic, Spanish and Classical Latin response modes.
+- Added `POST /api/v1/chat/completions`, `GET /api/v1/plans` and `GET /api/v1/subscription`.
+
+See [API.md](API.md) for the complete endpoint reference, request examples, quota rules and payment lifecycle.
