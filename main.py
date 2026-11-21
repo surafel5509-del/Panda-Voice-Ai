@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -251,9 +252,23 @@ async def lifespan(app: FastAPI):
         telegram_app.add_handler(CallbackQueryHandler(on_button))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
         await telegram_app.initialize()
-        if telegram_app.updater:
-            await telegram_app.updater.start_polling(drop_pending_updates=True)
         await telegram_app.start()
+        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+        if not webhook_url and domain:
+            webhook_url = f"https://{domain}/telegram/webhook"
+        webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        if webhook_url and webhook_secret:
+            await telegram_app.bot.set_webhook(
+                url=webhook_url,
+                secret_token=webhook_secret,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+            log.info("Telegram webhook registered.")
+        elif telegram_app.updater:
+            log.warning("Webhook configuration missing; using polling for local development.")
+            await telegram_app.updater.start_polling(drop_pending_updates=True)
         log.info("Telegram bot started.")
     else:
         log.warning("Telegram bot is disabled: no bot token configured.")
@@ -278,6 +293,24 @@ app = FastAPI(
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "PANDA VOICE AI"}
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Telegram bot is not initialized.")
+    expected = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature.")
+    try:
+        payload = await request.json()
+        update = Update.de_json(payload, telegram_app.bot)
+        await telegram_app.process_update(update)
+    except Exception:
+        log.exception("Could not process Telegram webhook update")
+        raise HTTPException(status_code=400, detail="Invalid Telegram update.")
+    return {"ok": True}
 
 
 @app.get("/api/v1/styles")
