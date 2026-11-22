@@ -59,7 +59,10 @@ _ALLOWED_CONSTANTS = {"pi": math.pi, "e": math.e}
 def safe_calculate(expression: str):
     if not isinstance(expression, str) or not expression.strip() or len(expression) > 200:
         raise ValueError("Expression must contain 1–200 characters.")
-    root = ast.parse(expression, mode="eval")
+    try:
+        root = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError("Invalid mathematical expression.") from exc
 
     def visit(node):
         if isinstance(node, ast.Expression):
@@ -82,9 +85,15 @@ def safe_calculate(expression: str):
             return _ALLOWED_FUNCTIONS[node.func.id](*args)
         raise ValueError("Unsupported expression. Only basic arithmetic and approved math functions are allowed.")
 
-    result = visit(root)
-    if isinstance(result, complex) or not math.isfinite(float(result)) or abs(result) > 1e100:
-        raise ValueError("Result is outside the supported numeric range.")
+    try:
+        result = visit(root)
+        if isinstance(result, complex):
+            raise ValueError("Result is outside the supported numeric range.")
+        numeric_result = float(result)
+        if not math.isfinite(numeric_result) or abs(numeric_result) > 1e100:
+            raise ValueError("Result is outside the supported numeric range.")
+    except (ArithmeticError, OverflowError) as exc:
+        raise ValueError("Expression cannot be evaluated safely.") from exc
     return result
 
 
