@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -105,6 +106,60 @@ class AgentTaskStoreTests(unittest.TestCase):
         self.assertEqual(len(listing), 1)
         self.assertNotIn("step_results", listing[0])
         self.assertEqual(listing[0]["task_id"], task_id)
+
+
+
+class AgentTaskWorkerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old_path = agent_tasks.DB_PATH
+        agent_tasks.DB_PATH = str(Path(self.temp.name) / "agent-worker.sqlite3")
+        agent_tasks.init_agent_tasks_db()
+
+    def tearDown(self):
+        agent_tasks.DB_PATH = self.old_path
+        self.temp.cleanup()
+
+    async def test_worker_completes_plan_steps_quality_review_and_final_answer(self):
+        old_run_agent = agent_tasks.run_agent
+        old_key = os.environ.get("OPENROUTER_API_KEY")
+        os.environ["OPENROUTER_API_KEY"] = "unit-test-provider-key"
+
+        async def fake_run_agent(messages, headers):
+            system = messages[0]["content"]
+            if "Create a practical plan" in system:
+                answer = '{"steps":[{"title":"Research","goal":"Gather facts"},{"title":"Synthesize","goal":"Combine findings"}]}'
+            elif "independent quality reviewer" in system:
+                answer = "PASS: Both planned steps are complete and the limitations are stated."
+            elif "Produce the final deliverable" in system:
+                answer = "Final report: the two steps were completed and reviewed."
+            else:
+                answer = "Step output: verified test finding."
+            return {
+                "assistant_message": {"content": answer},
+                "model": "mock-agent-model",
+                "usage": {"total_tokens": 12},
+                "tool_steps": 0,
+            }
+
+        agent_tasks.run_agent = fake_run_agent
+        try:
+            task_id = agent_tasks.create_agent_task("owner:worker-test", "Prepare and review a short report.")
+            self.assertEqual(agent_tasks._claim_next_task(), task_id)
+            await agent_tasks._execute_task(task_id)
+            task = agent_tasks.get_agent_task("owner:worker-test", task_id)
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["progress"], 100)
+            self.assertEqual(task["total_steps"], 2)
+            self.assertEqual(len(task["step_results"]), 2)
+            self.assertIn("Final report", task["result"])
+            self.assertTrue(any(event["event_type"] == "quality_review" for event in task["events"]))
+        finally:
+            agent_tasks.run_agent = old_run_agent
+            if old_key is None:
+                os.environ.pop("OPENROUTER_API_KEY", None)
+            else:
+                os.environ["OPENROUTER_API_KEY"] = old_key
 
 
 if __name__ == "__main__":
