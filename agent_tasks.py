@@ -19,6 +19,7 @@ DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
 MAX_STEPS = min(max(int(os.getenv("AGENT_MAX_TASK_STEPS", "8")), 1), 8)
 MAX_TASK_SECONDS = min(max(int(os.getenv("AGENT_MAX_TASK_SECONDS", "900")), 60), 1800)
 POLL_SECONDS = min(max(float(os.getenv("AGENT_TASK_POLL_SECONDS", "2")), 0.5), 10)
+MAX_ACTIVE_TASKS_PER_OWNER = min(max(int(os.getenv("AGENT_MAX_ACTIVE_TASKS_PER_OWNER", "3")), 1), 10)
 LEASE_MINUTES = 45
 _worker: asyncio.Task | None = None
 
@@ -99,6 +100,14 @@ def create_agent_task(owner_key: str, request: str, language: str | None = None)
     task_id = str(uuid.uuid4())
     now = _now().isoformat()
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            """SELECT COUNT(*) AS count FROM agent_tasks
+               WHERE owner_key=? AND status IN ('queued','running')""",
+            (owner_key,),
+        ).fetchone()["count"]
+        if int(active) >= MAX_ACTIVE_TASKS_PER_OWNER:
+            raise ValueError("You already have the maximum number of active agent tasks. Wait for one to finish or cancel it.")
         conn.execute(
             """INSERT INTO agent_tasks(task_id,owner_key,request,language,status,created_at,updated_at)
                VALUES(?,?,?,?,?,?,?)""",
