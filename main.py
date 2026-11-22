@@ -24,6 +24,11 @@ from telegram.ext import (
     MessageHandler, PreCheckoutQueryHandler, filters,
 )
 
+from agent_tasks import (
+    cancel_agent_task, create_agent_task, get_agent_task, init_agent_tasks_db,
+    list_agent_tasks, start_agent_task_worker, stop_agent_task_worker,
+)
+
 from ai_chat import (
     AIChatError, chat_completion, delete_chat_session, init_ai_chat_db,
     list_chat_sessions,
@@ -395,6 +400,11 @@ class ChatInput(BaseModel):
     language: Literal["en", "ar", "es", "la"] | None = None
 
 
+class AgentTaskInput(BaseModel):
+    message: str = Field(min_length=1, max_length=10000)
+    language: Literal["en", "am", "ar", "es"] | None = None
+
+
 class ChatMessage(BaseModel):
     role: Literal["user"]
     content: str = Field(min_length=1, max_length=MAX_AI_CHAT_CHARS)
@@ -421,7 +431,9 @@ async def lifespan(app: FastAPI):
     global telegram_app
     init_db()
     init_ai_chat_db()
+    init_agent_tasks_db()
     init_billing_db()
+    start_agent_task_worker()
     if BOT_TOKEN:
         telegram_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         telegram_app.add_handler(CommandHandler("start", start))
@@ -470,6 +482,7 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("Telegram bot is disabled: no bot token configured.")
     yield
+    await stop_agent_task_worker()
     if telegram_app:
         if telegram_app.updater and telegram_app.updater.running:
             await telegram_app.updater.stop()
@@ -674,6 +687,55 @@ async def api_agent_tools(x_api_key: str | None = Header(default=None)):
         "max_tool_steps": min(max(int(os.getenv("AGENT_MAX_TOOL_STEPS", "5")), 1), 8),
         "security": "Only registered tools can execute; no shell or arbitrary code execution is exposed.",
     }
+
+
+@app.post("/api/v1/agent/tasks", status_code=202)
+async def api_create_agent_task(payload: AgentTaskInput, x_api_key: str | None = Header(default=None)):
+    """Queue a persistent, multi-step task and return immediately."""
+    account = await require_api_key(x_api_key)
+    reserved = account["user_id"] is not None
+    if reserved:
+        try:
+            consume_request(account["user_id"], account["unlimited"])
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+    try:
+        task_id = create_agent_task(account["owner_key"], payload.message, payload.language)
+    except ValueError as exc:
+        if reserved:
+            refund_request(account["user_id"])
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "task_id": task_id,
+        "status": "queued",
+        "status_url": f"/api/v1/agent/tasks/{task_id}",
+        "message": "Task accepted. Poll status_url for progress and the final result.",
+    }
+
+
+@app.get("/api/v1/agent/tasks")
+async def api_list_agent_tasks(limit: int = Query(default=20, ge=1, le=50),
+                               x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    return {"items": list_agent_tasks(account["owner_key"], limit)}
+
+
+@app.get("/api/v1/agent/tasks/{task_id}")
+async def api_get_agent_task(task_id: str, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    task = get_agent_task(account["owner_key"], task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Agent task not found.")
+    return task
+
+
+@app.post("/api/v1/agent/tasks/{task_id}/cancel")
+async def api_cancel_agent_task(task_id: str, x_api_key: str | None = Header(default=None)):
+    account = await require_api_key(x_api_key)
+    status = cancel_agent_task(account["owner_key"], task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Agent task not found.")
+    return {"task_id": task_id, "status": status}
 
 
 @app.post("/api/v1/chat/completions")
