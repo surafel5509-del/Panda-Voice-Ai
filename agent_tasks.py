@@ -136,11 +136,12 @@ def get_agent_task(owner_key: str, task_id: str):
 def list_agent_tasks(owner_key: str, limit: int = 20):
     with _connect() as conn:
         rows = conn.execute(
-            """SELECT * FROM agent_tasks WHERE owner_key=?
-               ORDER BY created_at DESC LIMIT ?""",
+            """SELECT task_id,request,status,progress,total_steps,current_step,
+               created_at,updated_at,started_at,finished_at,error
+               FROM agent_tasks WHERE owner_key=? ORDER BY created_at DESC LIMIT ?""",
             (owner_key, max(1, min(int(limit), 50))),
         ).fetchall()
-    return [_task_dict(row) for row in rows]
+    return [{**dict(row), "request_preview": row["request"][:180]} for row in rows]
 
 
 def cancel_agent_task(owner_key: str, task_id: str):
@@ -184,6 +185,15 @@ def _claim_next_task():
             (now.isoformat(),),
         ).fetchone()
         if not row:
+            return None
+        if int(row["attempt_count"]) >= 3:
+            now_text = now.isoformat()
+            conn.execute(
+                """UPDATE agent_tasks SET status='failed',error=?,finished_at=?,updated_at=?,
+                   lease_until=NULL WHERE task_id=?""",
+                ("Worker lease expired three times; task was stopped for safety.", now_text, now_text, row["task_id"]),
+            )
+            _event(conn, row["task_id"], "failed", "Task stopped after three worker interruptions.")
             return None
         conn.execute(
             """UPDATE agent_tasks SET status='running',attempt_count=attempt_count+1,
@@ -313,11 +323,8 @@ async def _execute_task(task_id: str):
     results = task["step_results"]
     plan = task["plan"]
     if not plan:
-        _event_conn = _connect()
-        try:
-            _event(_event_conn, task_id, "planning", "Creating a bounded, multi-step plan.")
-        finally:
-            _event_conn.close()
+        with _connect() as conn:
+            _event(conn, task_id, "planning", "Creating a bounded, multi-step plan.")
         planning = await _call_agent([
             {"role": "system", "content": base_system + " Create a practical plan of at most " + str(MAX_STEPS) +
              " independent steps. Return ONLY JSON: {\"steps\":[{\"title\":\"...\",\"goal\":\"...\"}]}. "
