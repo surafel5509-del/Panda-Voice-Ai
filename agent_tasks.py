@@ -119,6 +119,7 @@ def create_agent_task(owner_key: str, request: str, language: str | None = None)
 
 def _task_dict(row):
     item = dict(row)
+    item.pop("owner_key", None)
     item["plan"] = json.loads(item.pop("plan_json") or "[]")
     item["step_results"] = json.loads(item.pop("step_results_json") or "[]")
     item["cancel_requested"] = bool(item["cancel_requested"])
@@ -307,8 +308,17 @@ def _provider_headers():
     }
 
 
-async def _call_agent(messages, headers):
-    return await asyncio.wait_for(run_agent(messages, headers), timeout=150)
+async def _call_agent(messages, headers, deadline=None):
+    timeout = 150
+    if deadline is not None:
+        remaining = (deadline - _now()).total_seconds()
+        if remaining <= 0:
+            raise AgentRuntimeError("Task exceeded its configured execution time limit.", 504)
+        timeout = min(timeout, remaining)
+    try:
+        return await asyncio.wait_for(run_agent(messages, headers), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise AgentRuntimeError("Agent model call timed out or task deadline was reached.", 504)
 
 
 async def _execute_task(task_id: str):
@@ -319,6 +329,7 @@ async def _execute_task(task_id: str):
         _finish(task_id, "cancelled", error="Task cancelled by the owner.")
         return
     started = _now()
+    deadline = started + timedelta(seconds=MAX_TASK_SECONDS)
     headers = _provider_headers()
     language_hint = {
         "en": "Respond in English.",
@@ -343,7 +354,7 @@ async def _execute_task(task_id: str):
              " independent steps. Return ONLY JSON: {\"steps\":[{\"title\":\"...\",\"goal\":\"...\"}]}. "
              "Do not include a step requiring unavailable tools or external side effects."},
             {"role": "user", "content": task["request"]},
-        ], headers)
+        ], headers, deadline)
         plan = _extract_plan(planning["assistant_message"].get("content", ""))
         results = []
         _save_plan(task_id, plan, results)
@@ -374,7 +385,7 @@ async def _execute_task(task_id: str):
                 response = await _call_agent([
                     {"role": "system", "content": base_system},
                     {"role": "user", "content": message},
-                ], headers)
+                ], headers, deadline)
                 output = response["assistant_message"].get("content", "").strip()
                 if not output:
                     raise AgentRuntimeError("Agent returned an empty step result.")
@@ -399,7 +410,7 @@ async def _execute_task(task_id: str):
         {"role": "user", "content": "Original request:\n" + task["request"] +
          "\n\nStep outputs:\n" + json.dumps(results, ensure_ascii=False)[:24000] +
          "\n\nReturn a concise quality review with: coverage, factual cautions, missing items, and a PASS or NEEDS_MORE_WORK verdict."},
-    ], headers)
+    ], headers, deadline)
     review_text = review["assistant_message"].get("content", "").strip()
     if _is_cancelled(task_id):
         _finish(task_id, "cancelled", error="Task cancelled by the owner.")
@@ -412,7 +423,7 @@ async def _execute_task(task_id: str):
          "\n\nCompleted work:\n" + json.dumps(results, ensure_ascii=False)[:24000] +
          "\n\nQuality review:\n" + review_text[:5000] +
          "\n\nCreate the final answer in the user's language."},
-    ], headers)
+    ], headers, deadline)
     answer = final["assistant_message"].get("content", "").strip()
     if _is_cancelled(task_id):
         _finish(task_id, "cancelled", error="Task cancelled by the owner.")
