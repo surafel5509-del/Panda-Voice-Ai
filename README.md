@@ -261,5 +261,6 @@ Additional settings:
 | `AGENT_MAX_TASK_STEPS` | `8` | Maximum plan steps (clamped to 1–8) |
 | `AGENT_MAX_TASK_SECONDS` | `900` | Maximum execution time (clamped to 60–1,800 seconds) |
 | `AGENT_TASK_POLL_SECONDS` | `2` | Worker queue polling interval |
+| `AGENT_MAX_ACTIVE_TASKS_PER_OWNER` | `3` | Active queued/running task cap per account (clamped to 1–10) |
 
 Long-running tasks consume one account request when submitted; polling and cancellation do not consume additional requests. The worker uses the same OpenRouter configuration as AI Chat. Only registered read-only tools are available: no shell, arbitrary code, filesystem access, or external account-changing actions.
