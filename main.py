@@ -685,6 +685,13 @@ async def api_agent_tools(x_api_key: str | None = Header(default=None)):
              "configuration": "Set TAVILY_API_KEY in Railway variables to enable."},
         ],
         "max_tool_steps": min(max(int(os.getenv("AGENT_MAX_TOOL_STEPS", "5")), 1), 8),
+        "max_task_steps": min(max(int(os.getenv("AGENT_MAX_TASK_STEPS", "8")), 1), 8),
+        "max_task_seconds": min(max(int(os.getenv("AGENT_MAX_TASK_SECONDS", "900")), 60), 1800),
+        "max_active_tasks_per_owner": min(max(int(os.getenv("AGENT_MAX_ACTIVE_TASKS_PER_OWNER", "3")), 1), 10),
+        "task_capabilities": [
+            "multi_step_planning", "background_execution", "persistent_progress",
+            "task_cancellation", "step_retry", "worker_recovery", "quality_review"
+        ],
         "security": "Only registered tools can execute; no shell or arbitrary code execution is exposed.",
     }
 
@@ -1253,6 +1260,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "<b>BASE URL</b>\nhttps://panda-voice-ai-production.up.railway.app\n\n"
                 "<b>VOICE API</b>\nGET /api/v1/voices?gender=all\nGET /api/v1/voices/{voice_id}\nGET /api/v1/styles\nGET /api/v1/engines\nPOST /api/v1/preview\nPOST /api/v1/tts\n\n"
                 "<b>AI CHAT API</b>\nPOST /api/v1/chat\nPOST /api/v1/chat/completions\nGET /api/v1/chat/sessions\nDELETE /api/v1/chat/sessions/{session_id}\n\n"
+                "<b>PROFESSIONAL AI AGENT</b>\\nPOST /api/v1/agent\\nGET /api/v1/agent/tools\\nPOST /api/v1/agent/tasks\\nGET /api/v1/agent/tasks\\nGET /api/v1/agent/tasks/{task_id}\\nPOST /api/v1/agent/tasks/{task_id}/cancel\\n\\n"
                 "<b>DEVELOPER / ACCOUNT</b>\nGET /api/v1/account\nGET /api/v1/limits\nGET /api/v1/plans\nGET /api/v1/subscription\nGET /api/v1/tokens\nDELETE /api/v1/tokens/{token_id}\n\n"
                 "<b>INTERACTIVE DOCS</b>\nhttps://panda-voice-ai-production.up.railway.app/docs\n"
                 "https://github.com/surafel5509-del/Panda-Voice-Ai/blob/main/API.md\n\n"
