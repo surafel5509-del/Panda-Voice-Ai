@@ -20,7 +20,7 @@ MAX_STEPS = min(max(int(os.getenv("AGENT_MAX_TASK_STEPS", "8")), 1), 8)
 MAX_TASK_SECONDS = min(max(int(os.getenv("AGENT_MAX_TASK_SECONDS", "900")), 60), 1800)
 POLL_SECONDS = min(max(float(os.getenv("AGENT_TASK_POLL_SECONDS", "2")), 0.5), 10)
 MAX_ACTIVE_TASKS_PER_OWNER = min(max(int(os.getenv("AGENT_MAX_ACTIVE_TASKS_PER_OWNER", "3")), 1), 10)
-LEASE_MINUTES = 45
+LEASE_MINUTES = 3
 _worker: asyncio.Task | None = None
 
 
@@ -239,7 +239,7 @@ def _progress(task_id, step_index, results, message):
         conn.execute(
             """UPDATE agent_tasks SET current_step=?,progress=?,step_results_json=?,
                lease_until=?,updated_at=? WHERE task_id=?""",
-            (step_index, int(step_index * 100 / max(1, _load_total_steps(conn, task_id))),
+            (step_index, int(step_index * 95 / max(1, _load_total_steps(conn, task_id))),
              json.dumps(results, ensure_ascii=False), lease, now, task_id),
         )
         _event(conn, task_id, "progress", message)
@@ -433,12 +433,27 @@ async def _execute_task(task_id: str):
     _finish(task_id, "completed", result=answer[:30000])
 
 
+async def _lease_heartbeat(task_id: str):
+    while True:
+        await asyncio.sleep(45)
+        lease = (_now() + timedelta(minutes=LEASE_MINUTES)).isoformat()
+        with _connect() as conn:
+            cur = conn.execute(
+                """UPDATE agent_tasks SET lease_until=?,updated_at=?
+                   WHERE task_id=? AND status='running'""",
+                (lease, _now().isoformat(), task_id),
+            )
+            if cur.rowcount == 0:
+                return
+
+
 async def _worker_loop():
     while True:
         task_id = _claim_next_task()
         if not task_id:
             await asyncio.sleep(POLL_SECONDS)
             continue
+        heartbeat = asyncio.create_task(_lease_heartbeat(task_id))
         try:
             await _execute_task(task_id)
         except asyncio.CancelledError:
@@ -446,6 +461,12 @@ async def _worker_loop():
         except Exception as exc:
             log.exception("Long-running agent task failed id=%s", task_id)
             _finish(task_id, "failed", error=str(exc)[:1000] or "Task execution failed.")
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
 
 def start_agent_task_worker():
