@@ -209,3 +209,4 @@ Optional Railway variables:
 - `AGENT_MAX_TASK_STEPS` (default `8`, hard range 1–8).
 - `AGENT_MAX_TASK_SECONDS` (default `900`, hard range 60–1,800).
 - `AGENT_TASK_POLL_SECONDS` (default `2`, hard range 0.5–10).
+- `AGENT_MAX_ACTIVE_TASKS_PER_OWNER` (default `3`, hard range 1–10).
