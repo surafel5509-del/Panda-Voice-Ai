@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from agent_runtime import AgentRuntimeError, run_agent
@@ -37,6 +38,19 @@ def _connect():
     return conn
 
 
+@contextmanager
+def _db():
+    conn = _connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _event(conn, task_id, event_type, message):
     conn.execute(
         "INSERT INTO agent_task_events(task_id,event_type,message,created_at) VALUES(?,?,?,?)",
@@ -45,7 +59,7 @@ def _event(conn, task_id, event_type, message):
 
 
 def init_agent_tasks_db():
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS agent_tasks (
                 task_id TEXT PRIMARY KEY,
@@ -99,7 +113,7 @@ def create_agent_task(owner_key: str, request: str, language: str | None = None)
         raise ValueError("Task description must contain 1–10,000 characters.")
     task_id = str(uuid.uuid4())
     now = _now().isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         active = conn.execute(
             """SELECT COUNT(*) AS count FROM agent_tasks
@@ -127,7 +141,7 @@ def _task_dict(row):
 
 
 def get_agent_task(owner_key: str, task_id: str):
-    with _connect() as conn:
+    with _db() as conn:
         row = conn.execute(
             "SELECT * FROM agent_tasks WHERE task_id=? AND owner_key=?",
             (task_id, owner_key),
@@ -144,7 +158,7 @@ def get_agent_task(owner_key: str, task_id: str):
 
 
 def list_agent_tasks(owner_key: str, limit: int = 20):
-    with _connect() as conn:
+    with _db() as conn:
         rows = conn.execute(
             """SELECT task_id,request,status,progress,total_steps,current_step,
                created_at,updated_at,started_at,finished_at,error
@@ -156,7 +170,7 @@ def list_agent_tasks(owner_key: str, limit: int = 20):
 
 def cancel_agent_task(owner_key: str, task_id: str):
     now = _now().isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT status FROM agent_tasks WHERE task_id=? AND owner_key=?",
@@ -186,7 +200,7 @@ def cancel_agent_task(owner_key: str, task_id: str):
 def _claim_next_task():
     now = _now()
     lease = (now + timedelta(minutes=LEASE_MINUTES)).isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """SELECT * FROM agent_tasks
@@ -215,7 +229,7 @@ def _claim_next_task():
 
 
 def _load_task(task_id):
-    with _connect() as conn:
+    with _db() as conn:
         row = conn.execute("SELECT * FROM agent_tasks WHERE task_id=?", (task_id,)).fetchone()
         return _task_dict(row) if row else None
 
@@ -223,7 +237,7 @@ def _load_task(task_id):
 def _save_plan(task_id, plan, results):
     now = _now().isoformat()
     lease = (_now() + timedelta(minutes=LEASE_MINUTES)).isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute(
             """UPDATE agent_tasks SET plan_json=?,step_results_json=?,total_steps=?,
                lease_until=?,updated_at=? WHERE task_id=?""",
@@ -235,7 +249,7 @@ def _save_plan(task_id, plan, results):
 def _progress(task_id, step_index, results, message):
     now = _now().isoformat()
     lease = (_now() + timedelta(minutes=LEASE_MINUTES)).isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute(
             """UPDATE agent_tasks SET current_step=?,progress=?,step_results_json=?,
                lease_until=?,updated_at=? WHERE task_id=?""",
@@ -251,7 +265,7 @@ def _load_total_steps(conn, task_id):
 
 
 def _is_cancelled(task_id):
-    with _connect() as conn:
+    with _db() as conn:
         row = conn.execute(
             "SELECT cancel_requested,status FROM agent_tasks WHERE task_id=?",
             (task_id,),
@@ -261,7 +275,7 @@ def _is_cancelled(task_id):
 
 def _finish(task_id, status, result=None, error=None):
     now = _now().isoformat()
-    with _connect() as conn:
+    with _db() as conn:
         conn.execute(
             """UPDATE agent_tasks SET status=?,result=?,error=?,
                progress=CASE WHEN ?='completed' THEN 100 ELSE progress END,
@@ -347,7 +361,7 @@ async def _execute_task(task_id: str):
     results = task["step_results"]
     plan = task["plan"]
     if not plan:
-        with _connect() as conn:
+        with _db() as conn:
             _event(conn, task_id, "planning", "Creating a bounded, multi-step plan.")
         planning = await _call_agent([
             {"role": "system", "content": base_system + " Create a practical plan of at most " + str(MAX_STEPS) +
@@ -358,7 +372,7 @@ async def _execute_task(task_id: str):
         plan = _extract_plan(planning["assistant_message"].get("content", ""))
         results = []
         _save_plan(task_id, plan, results)
-        with _connect() as conn:
+        with _db() as conn:
             _event(conn, task_id, "planned", "Plan created with " + str(len(plan)) + " step(s).")
 
     for index in range(len(results), len(plan)):
@@ -377,7 +391,7 @@ async def _execute_task(task_id: str):
             "\n\nComplete this step only. Use tools when useful. Return a concise, structured result "
             "with findings, assumptions, and source URLs where relevant."
         )
-        with _connect() as conn:
+        with _db() as conn:
             _event(conn, task_id, "step_started", "Working on step " + str(index + 1) + ": " + step["title"])
         last_error = None
         for attempt in range(2):
@@ -394,7 +408,7 @@ async def _execute_task(task_id: str):
             except (AgentRuntimeError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt == 0 and not _is_cancelled(task_id):
-                    with _connect() as conn:
+                    with _db() as conn:
                         _event(conn, task_id, "retry", "Retrying step after a transient agent error.")
                     await asyncio.sleep(1.5)
         if last_error:
@@ -415,7 +429,7 @@ async def _execute_task(task_id: str):
     if _is_cancelled(task_id):
         _finish(task_id, "cancelled", error="Task cancelled by the owner.")
         return
-    with _connect() as conn:
+    with _db() as conn:
         _event(conn, task_id, "quality_review", review_text[:900])
     final = await _call_agent([
         {"role": "system", "content": base_system + " Produce the final deliverable. Be clear, useful, and honest about limitations. Include sources/URLs present in the step outputs. Do not expose private chain-of-thought; summarize conclusions and verification."},
@@ -437,7 +451,7 @@ async def _lease_heartbeat(task_id: str):
     while True:
         await asyncio.sleep(45)
         lease = (_now() + timedelta(minutes=LEASE_MINUTES)).isoformat()
-        with _connect() as conn:
+        with _db() as conn:
             cur = conn.execute(
                 """UPDATE agent_tasks SET lease_until=?,updated_at=?
                    WHERE task_id=? AND status='running'""",
