@@ -253,7 +253,7 @@ For work that needs multiple research, analysis, writing, and verification steps
 - `GET /api/v1/agent/tasks?limit=20` — list the authenticated owner's recent task summaries.
 - `POST /api/v1/agent/tasks/{task_id}/cancel` — cancel a queued task or request cancellation of a running task.
 
-Task requests support up to 10,000 characters. The planner is capped at 8 steps by default; each step can use the bounded registered tools, receives prior step outputs, and is retried once after a transient model error. A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled. Execution has a configurable time limit and SQLite leases allow interrupted work to be resumed after a worker restart. Tasks are isolated by authenticated account owner.
+Task requests support up to 10,000 characters. The planner is capped at 8 steps by default; each step can use the bounded registered tools, receives prior step outputs, and is retried once after a transient model error. A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled. Execution has a configurable time limit; the worker renews a 3-minute SQLite lease every 45 seconds so another worker can reclaim interrupted work after the lease expires. Tasks are isolated by authenticated account owner.
 
 Additional settings:
 | Variable | Default | Purpose |
