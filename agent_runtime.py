@@ -195,8 +195,8 @@ async def run_agent(messages: list[dict], headers: dict):
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     result = await execute_tool(name, args)
                     tool_content = json.dumps(result, ensure_ascii=False, default=str)
-                except (ValueError, TypeError, SyntaxError, ZeroDivisionError, OverflowError, httpx.HTTPError) as exc:
-                    tool_content = json.dumps({"error": str(exc)[:500]}, ensure_ascii=False)
+                except Exception as exc:
+                    tool_content = json.dumps({"error": str(exc)[:500] or "Tool execution failed."}, ensure_ascii=False)
                 conversation.append({
                     "role": "tool", "tool_call_id": call.get("id", ""),
                     "name": name, "content": tool_content[:9000],
