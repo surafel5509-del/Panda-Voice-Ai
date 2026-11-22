@@ -141,6 +141,7 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
             "reply": answer,
             "model": data.get("model", OPENROUTER_MODEL),
             "usage": data.get("usage"),
+            "agent_tool_steps": result.get("tool_steps", 0),
         }
 
 
