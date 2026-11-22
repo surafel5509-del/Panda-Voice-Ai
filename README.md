@@ -242,3 +242,24 @@ Agent configuration:
 | `AGENT_MAX_SEARCH_RESULTS` | No | `5` (clamped to 1–8) |
 
 The agent only executes explicitly registered tools. It has no shell, filesystem, arbitrary-code, or unrestricted HTTP tool. Tool-call iterations and search-result sizes are bounded. API authentication, per-account sessions, rate limits and shared subscription quotas continue to apply. The agent uses the configured OpenRouter model, which must support tool calling.
+
+
+### Long-running agent tasks
+
+For work that needs multiple research, analysis, writing, and verification steps, use the asynchronous task API. It returns immediately with a task ID; the worker stores progress and results in the persistent SQLite volume so clients can reconnect and poll after a browser or app restart.
+
+- `POST /api/v1/agent/tasks` — queue a multi-step task (HTTP 202).
+- `GET /api/v1/agent/tasks/{task_id}` — read status, plan, progress events, step outputs, quality review, and final result.
+- `GET /api/v1/agent/tasks?limit=20` — list the authenticated owner's recent task summaries.
+- `POST /api/v1/agent/tasks/{task_id}/cancel` — cancel a queued task or request cancellation of a running task.
+
+Task requests support up to 10,000 characters. The planner is capped at 8 steps by default; each step can use the bounded registered tools, receives prior step outputs, and is retried once after a transient model error. A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled. Execution has a configurable time limit and SQLite leases allow interrupted work to be resumed after a worker restart. Tasks are isolated by authenticated account owner.
+
+Additional settings:
+| Variable | Default | Purpose |
+|---|---:|---|
+| `AGENT_MAX_TASK_STEPS` | `8` | Maximum plan steps (clamped to 1–8) |
+| `AGENT_MAX_TASK_SECONDS` | `900` | Maximum execution time (clamped to 60–1,800 seconds) |
+| `AGENT_TASK_POLL_SECONDS` | `2` | Worker queue polling interval |
+
+Long-running tasks consume one account request when submitted; polling and cancellation do not consume additional requests. The worker uses the same OpenRouter configuration as AI Chat. Only registered read-only tools are available: no shell, arbitrary code, filesystem access, or external account-changing actions.
