@@ -201,7 +201,7 @@ A queued task is cancelled immediately. For a running task, cancellation is requ
 - Each step gets one retry after a transient provider failure.
 - A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled.
 - Task execution is capped at 15 minutes by default; settings can be adjusted within hard server-side bounds.
-- Task state, step outputs, and events are stored in the existing persistent SQLite volume. A worker lease allows interrupted tasks to be resumed after a restart.
+- Task state, step outputs, and events are stored in the existing persistent SQLite volume. A 3-minute worker lease is refreshed every 45 seconds, allowing another worker to reclaim interrupted tasks after the lease expires.
 - Tasks are isolated by authenticated account owner. Never share task IDs or API keys with untrusted clients.
 - The agent has no shell, arbitrary code, filesystem, unrestricted HTTP, or external account-mutation tools.
 
