@@ -139,3 +139,73 @@ FastAPI-generated schema and interactive docs:
 - `/redoc`
 
 Do not expose provider credentials. Keep `BOT_TOKEN`, Fish Audio credentials, OpenRouter credentials, the master API key, and the unlimited-access code only in Railway secrets.
+
+
+## Long-running agent tasks
+
+Use these endpoints for requests that require multi-step research, analysis, planning, writing, and review. They are asynchronous: the create request returns HTTP 202 and a task ID immediately. All endpoints require `X-API-Key` and are scoped to the authenticated account owner.
+
+### Create a task
+
+`POST /api/v1/agent/tasks`
+
+```json
+{
+  "message": "Research three credible sources about renewable energy adoption, compare their findings, calculate the percentage growth from 2400 to 3100, and prepare a concise report.",
+  "language": "en"
+}
+```
+
+Optional `language`: `en`, `am`, `ar`, or `es`. Omit it to follow the language of the request.
+
+Example response (HTTP 202):
+
+```json
+{
+  "task_id": "returned-task-uuid",
+  "status": "queued",
+  "status_url": "/api/v1/agent/tasks/returned-task-uuid",
+  "message": "Task accepted. Poll status_url for progress and the final result."
+}
+```
+
+### Check task progress and result
+
+`GET /api/v1/agent/tasks/{task_id}`
+
+The response includes:
+- `status`: `queued`, `running`, `completed`, `failed`, or `cancelled`.
+- `progress`, `current_step`, and `total_steps`.
+- `plan` and persisted `step_results`.
+- Recent `events` showing planning, step completion, retries, and quality review.
+- `result` when completed, or `error` when failed.
+
+Poll every 2–5 seconds while the task is queued or running. A completed result is stored in the persistent SQLite database and can be fetched later.
+
+### List recent tasks
+
+`GET /api/v1/agent/tasks?limit=20`
+
+Returns recent task summaries for the authenticated account. The maximum limit is 50.
+
+### Cancel a task
+
+`POST /api/v1/agent/tasks/{task_id}/cancel`
+
+A queued task is cancelled immediately. For a running task, cancellation is requested and takes effect after the current model call completes. Completed or failed tasks are not changed.
+
+### Execution limits and safety
+
+- One shared account request is consumed when a task is accepted; status polling and cancellation do not consume extra requests.
+- Plans are limited to 8 steps by default; each step can use the existing bounded agent tools.
+- Each step gets one retry after a transient provider failure.
+- A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled.
+- Task execution is capped at 15 minutes by default; settings can be adjusted within hard server-side bounds.
+- Task state, step outputs, and events are stored in the existing persistent SQLite volume. A worker lease allows interrupted tasks to be resumed after a restart.
+- Tasks are isolated by authenticated account owner. Never share task IDs or API keys with untrusted clients.
+- The agent has no shell, arbitrary code, filesystem, unrestricted HTTP, or external account-mutation tools.
+
+Optional Railway variables:
+- `AGENT_MAX_TASK_STEPS` (default `8`, hard range 1–8).
+- `AGENT_MAX_TASK_SECONDS` (default `900`, hard range 60–1,800).
+- `AGENT_TASK_POLL_SECONDS` (default `2`, hard range 0.5–10).
