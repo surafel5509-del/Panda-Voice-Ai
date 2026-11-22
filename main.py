@@ -654,6 +654,28 @@ async def api_chat(payload: ChatInput, x_api_key: str | None = Header(default=No
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+@app.post("/api/v1/agent")
+async def api_agent(payload: ChatInput, x_api_key: str | None = Header(default=None)):
+    """Professional tool-using agent; shares the existing account quota and session store."""
+    return await api_chat(payload, x_api_key)
+
+
+@app.get("/api/v1/agent/tools")
+async def api_agent_tools(x_api_key: str | None = Header(default=None)):
+    await require_api_key(x_api_key)
+    return {
+        "items": [
+            {"name": "calculator", "description": "Safe arithmetic and common math functions", "available": True},
+            {"name": "get_current_datetime", "description": "Current date and time with IANA timezone support", "available": True},
+            {"name": "web_search", "description": "Live web research with sourced results",
+             "available": bool(os.getenv("TAVILY_API_KEY", "").strip()),
+             "configuration": "Set TAVILY_API_KEY in Railway variables to enable."},
+        ],
+        "max_tool_steps": min(max(int(os.getenv("AGENT_MAX_TOOL_STEPS", "5")), 1), 8),
+        "security": "Only registered tools can execute; no shell or arbitrary code execution is exposed.",
+    }
+
+
 @app.post("/api/v1/chat/completions")
 async def api_chat_completions(payload: ChatCompletionsInput, x_api_key: str | None = Header(default=None)):
     account = await require_api_key(x_api_key)
