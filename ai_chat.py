@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from agent_runtime import AgentRuntimeError, run_agent
+
 DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 OPENROUTER_MODEL = (os.getenv("OPENROUTER_MODEL") or "z-ai/glm-5.3-flash").strip()
@@ -103,13 +105,6 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
         system_prompt = SYSTEM_PROMPT + (" " + language_prompts[language] if language in language_prompts else "")
         messages = [{"role": "system", "content": system_prompt}, *history,
                     {"role": "user", "content": user_text}]
-        payload = {
-            "model": OPENROUTER_MODEL,
-            "messages": messages,
-            "reasoning": {"enabled": OPENROUTER_REASONING},
-            "temperature": 0.7,
-            "max_tokens": 2048,
-        }
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -117,33 +112,14 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
             "X-Title": "PANDA VOICE AI",
         }
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
-                response = await client.post(
-                    f"{OPENROUTER_BASE_URL}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-        except httpx.TimeoutException:
-            raise AIChatError("AI Chat timed out. Please try again.", 504)
-        except httpx.HTTPError:
-            raise AIChatError("Could not connect to the AI provider.", 502)
-
-        if response.status_code == 401:
-            raise AIChatError("OpenRouter authentication failed. Check OPENROUTER_API_KEY.", 503)
-        if response.status_code == 429:
-            raise AIChatError("AI provider rate limit reached. Please try again shortly.", 429)
-        if response.status_code >= 500:
-            raise AIChatError("AI provider is temporarily unavailable.", 502)
-        if response.status_code >= 400:
-            raise AIChatError("AI provider rejected the request. Check the configured model and request.", 502)
-        try:
-            data = response.json()
-            assistant_message = data["choices"][0]["message"]
-            answer = assistant_message.get("content")
-            if not isinstance(answer, str) or not answer.strip():
-                raise ValueError("Empty assistant response")
-        except (ValueError, KeyError, IndexError, TypeError):
+            result = await run_agent(messages, headers)
+        except AgentRuntimeError as exc:
+            raise AIChatError(str(exc), exc.status_code)
+        assistant_message = result["assistant_message"]
+        answer = assistant_message.get("content")
+        if not isinstance(answer, str) or not answer.strip():
             raise AIChatError("AI provider returned an invalid response.", 502)
+        data = {"model": result["model"], "usage": result.get("usage")}
 
         # Keep OpenRouter's reasoning_details opaque and unmodified for continuation.
         saved_assistant = {"role": "assistant", "content": answer}
