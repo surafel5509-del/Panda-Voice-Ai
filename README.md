@@ -219,3 +219,26 @@ Creating an API token displays the Base URL, all Voice and AI Chat endpoints, Sw
 Telegram's native command menu includes `/start`, `/menu`, `/chat`, `/newchat`, `/chatex`, `/plans`, `/language`, `/settings`, `/developers`, `/help` and `/cancel`.
 
 Free users can make 2 combined AI Chat + Voice requests per UTC day and change style/model twice per day. Paid subscribers can switch styles and speech models freely.
+
+
+## Professional AI Agent
+
+The existing AI Chat now runs through a bounded OpenRouter tool-calling agent. Telegram AI Chat and the authenticated REST API share the same agent runtime and existing persistent sessions. The existing Fish Audio text-to-speech studio, voice catalog, styles, previews, MP3 generation, Telegram voice workflow and `POST /api/v1/tts` endpoint are intentionally unchanged.
+
+Built-in agent tools:
+- `calculator` — restricted arithmetic and approved math functions (no Python execution).
+- `get_current_datetime` — current date/time with IANA timezone support.
+- `web_search` — live research through Tavily, with result URLs; configure `TAVILY_API_KEY` on Railway.
+
+New endpoints (all require `X-API-Key`):
+- `POST /api/v1/agent` — stateful tool-using agent; same request/response and session behavior as `/api/v1/chat`.
+- `GET /api/v1/agent/tools` — lists registered tools and whether optional web search is configured.
+
+Agent configuration:
+| Variable | Required | Default |
+|---|---:|---|
+| `TAVILY_API_KEY` | Optional; enables live web search | — |
+| `AGENT_MAX_TOOL_STEPS` | No | `5` (clamped to 1–8) |
+| `AGENT_MAX_SEARCH_RESULTS` | No | `5` (clamped to 1–8) |
+
+The agent only executes explicitly registered tools. It has no shell, filesystem, arbitrary-code, or unrestricted HTTP tool. Tool-call iterations and search-result sizes are bounded. API authentication, per-account sessions, rate limits and shared subscription quotas continue to apply. The agent uses the configured OpenRouter model, which must support tool calling.
