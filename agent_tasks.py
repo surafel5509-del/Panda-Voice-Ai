@@ -19,7 +19,7 @@ DB_PATH = os.getenv("PANDA_DATABASE_PATH", "/data/panda.sqlite3")
 MAX_STEPS = min(max(int(os.getenv("AGENT_MAX_TASK_STEPS", "8")), 1), 8)
 MAX_TASK_SECONDS = min(max(int(os.getenv("AGENT_MAX_TASK_SECONDS", "900")), 60), 1800)
 POLL_SECONDS = min(max(float(os.getenv("AGENT_TASK_POLL_SECONDS", "2")), 0.5), 10)
-LEASE_MINUTES = 30
+LEASE_MINUTES = 45
 _worker: asyncio.Task | None = None
 
 
@@ -306,6 +306,9 @@ async def _execute_task(task_id: str):
     task = _load_task(task_id)
     if not task:
         return
+    if _is_cancelled(task_id):
+        _finish(task_id, "cancelled", error="Task cancelled by the owner.")
+        return
     started = _now()
     headers = _provider_headers()
     language_hint = {
@@ -402,6 +405,9 @@ async def _execute_task(task_id: str):
          "\n\nCreate the final answer in the user's language."},
     ], headers)
     answer = final["assistant_message"].get("content", "").strip()
+    if _is_cancelled(task_id):
+        _finish(task_id, "cancelled", error="Task cancelled by the owner.")
+        return
     if not answer:
         raise AgentRuntimeError("Agent could not produce a final deliverable.")
     _finish(task_id, "completed", result=answer[:30000])
