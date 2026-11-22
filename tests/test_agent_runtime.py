@@ -29,6 +29,14 @@ class SafeCalculatorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             safe_calculate("1 / 0")
 
+    def test_rejects_invalid_syntax_as_value_error(self):
+        with self.assertRaises(ValueError):
+            safe_calculate("2 +")
+
+    def test_rejects_math_domain_errors(self):
+        with self.assertRaises(ValueError):
+            safe_calculate("sqrt(-1)")
+
 
 if __name__ == "__main__":
     unittest.main()
