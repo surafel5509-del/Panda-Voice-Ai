@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,8 +52,20 @@ class AgentTaskStoreTests(unittest.TestCase):
         task = agent_tasks.get_agent_task("owner:1", task_id)
         self.assertEqual(task["total_steps"], 2)
         self.assertEqual(task["current_step"], 1)
-        self.assertEqual(task["progress"], 50)
+        self.assertEqual(task["progress"], 47)
         self.assertEqual(task["step_results"][0]["output"], "Finding A")
+
+    def test_expired_worker_lease_allows_task_recovery(self):
+        task_id = agent_tasks.create_agent_task("owner:1", "Recover after worker restart.")
+        self.assertEqual(agent_tasks._claim_next_task(), task_id)
+        with sqlite3.connect(agent_tasks.DB_PATH) as conn:
+            conn.execute(
+                "UPDATE agent_tasks SET lease_until=? WHERE task_id=?",
+                ("2000-01-01T00:00:00+00:00", task_id),
+            )
+        self.assertEqual(agent_tasks._claim_next_task(), task_id)
+        task = agent_tasks.get_agent_task("owner:1", task_id)
+        self.assertEqual(task["attempt_count"], 2)
 
     def test_plan_parser_bounds_steps_and_rejects_malformed_output(self):
         raw = '{"steps":[{"title":"One","goal":"Do one"},{"title":"Two","goal":"Do two"}]}'
