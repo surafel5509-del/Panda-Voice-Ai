@@ -253,9 +253,10 @@ def _finish(task_id, status, result=None, error=None):
     now = _now().isoformat()
     with _connect() as conn:
         conn.execute(
-            """UPDATE agent_tasks SET status=?,result=?,error=?,progress=?,finished_at=?,
-               lease_until=NULL,updated_at=? WHERE task_id=?""",
-            (status, result, error, 100 if status == "completed" else None, now, now, task_id),
+            """UPDATE agent_tasks SET status=?,result=?,error=?,
+               progress=CASE WHEN ?='completed' THEN 100 ELSE progress END,
+               finished_at=?,lease_until=NULL,updated_at=? WHERE task_id=?""",
+            (status, result, error, status, now, now, task_id),
         )
         _event(conn, task_id, status, result[:800] if result else (error or status))
 
@@ -388,6 +389,11 @@ async def _execute_task(task_id: str):
          "\n\nReturn a concise quality review with: coverage, factual cautions, missing items, and a PASS or NEEDS_MORE_WORK verdict."},
     ], headers)
     review_text = review["assistant_message"].get("content", "").strip()
+    if _is_cancelled(task_id):
+        _finish(task_id, "cancelled", error="Task cancelled by the owner.")
+        return
+    with _connect() as conn:
+        _event(conn, task_id, "quality_review", review_text[:900])
     final = await _call_agent([
         {"role": "system", "content": base_system + " Produce the final deliverable. Be clear, useful, and honest about limitations. Include sources/URLs present in the step outputs. Do not expose private chain-of-thought; summarize conclusions and verification."},
         {"role": "user", "content": "Original request:\n" + task["request"] +
@@ -399,8 +405,6 @@ async def _execute_task(task_id: str):
     if not answer:
         raise AgentRuntimeError("Agent could not produce a final deliverable.")
     _finish(task_id, "completed", result=answer[:30000])
-    with _connect() as conn:
-        _event(conn, task_id, "quality_review", review_text[:900])
 
 
 async def _worker_loop():
