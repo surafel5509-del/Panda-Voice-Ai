@@ -76,6 +76,31 @@ Returns MP3 bytes. Optional `model` values are `s2.1-pro-free`, `s2.1-pro`, `s2-
 
 Supported language values: `en` English, `ar` Arabic, `es` Spanish, `la` Classical Latin. Omit language to let the assistant follow the user's language. Response includes `session_id`, `reply`, `model`, and provider usage metadata. Pass the returned session ID to continue.
 
+### Professional agent endpoint
+
+`POST /api/v1/agent` — same stateful request and response shape as `POST /api/v1/chat`, with bounded tool calling enabled. It uses the same session store, per-account authentication, rate limits and shared subscription quota.
+
+```json
+{
+  "message": "Research the latest renewable energy trends, compare three sources, and calculate a 15% increase on 2400.",
+  "session_id": null
+}
+```
+
+Built-in tools:
+- `calculator` — safe arithmetic and approved math functions.
+- `get_current_datetime` — current date/time in an optional IANA timezone.
+- `web_search` — live web search through Tavily; requires the server-side `TAVILY_API_KEY`.
+
+`GET /api/v1/agent/tools` returns the registered tool catalogue and whether optional web search is configured. All agent endpoints require `X-API-Key`.
+
+Optional Railway configuration:
+- `TAVILY_API_KEY` — enables live web research.
+- `AGENT_MAX_TOOL_STEPS` — maximum tool rounds per request (default 5, clamped to 1–8).
+- `AGENT_MAX_SEARCH_RESULTS` — maximum web results per search (default 5, clamped to 1–8).
+
+Only registered tools execute. No shell, filesystem, arbitrary code execution or unrestricted HTTP tool is exposed. Select an OpenRouter model with function/tool-calling support.
+
 ### Chat Completions-compatible endpoint
 `POST /api/v1/chat/completions`
 
