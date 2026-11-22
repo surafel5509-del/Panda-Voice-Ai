@@ -22,6 +22,7 @@ class AgentTaskStoreTests(unittest.TestCase):
         self.assertEqual(task["status"], "queued")
         self.assertEqual(task["progress"], 0)
         self.assertEqual(task["request"], "Research a topic and prepare a report.")
+        self.assertNotIn("owner_key", task)
         self.assertIsNone(agent_tasks.get_agent_task("owner:2", task_id))
 
     def test_queued_task_can_be_cancelled(self):
