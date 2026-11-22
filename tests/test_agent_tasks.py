@@ -68,6 +68,21 @@ class AgentTaskStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent_tasks.create_agent_task("owner:1", "x" * 10001)
 
+    def test_active_task_limit_is_enforced_per_owner(self):
+        previous = agent_tasks.MAX_ACTIVE_TASKS_PER_OWNER
+        agent_tasks.MAX_ACTIVE_TASKS_PER_OWNER = 1
+        try:
+            first = agent_tasks.create_agent_task("owner:1", "First task.")
+            with self.assertRaises(ValueError):
+                agent_tasks.create_agent_task("owner:1", "Second task.")
+            agent_tasks.cancel_agent_task("owner:1", first)
+            second = agent_tasks.create_agent_task("owner:1", "Second task.")
+            self.assertNotEqual(first, second)
+            other_owner = agent_tasks.create_agent_task("owner:2", "Another owner's task.")
+            self.assertNotEqual(second, other_owner)
+        finally:
+            agent_tasks.MAX_ACTIVE_TASKS_PER_OWNER = previous
+
     def test_task_lists_do_not_include_full_step_outputs(self):
         task_id = agent_tasks.create_agent_task("owner:1", "A long task.")
         agent_tasks._claim_next_task()
