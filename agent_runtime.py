@@ -10,7 +10,6 @@ import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import httpx
 
 OPENROUTER_BASE_URL = (os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
 OPENROUTER_MODEL = (os.getenv("OPENROUTER_MODEL") or "z-ai/glm-5.3-flash").strip()
@@ -90,6 +89,7 @@ def safe_calculate(expression: str):
 
 
 async def _web_search(query: str):
+    import httpx
     key = (os.getenv("TAVILY_API_KEY") or "").strip()
     if not key:
         return {"available": False, "message": "Live web search is not configured. Set TAVILY_API_KEY in Railway variables."}
@@ -141,6 +141,7 @@ class AgentRuntimeError(Exception):
 
 
 async def run_agent(messages: list[dict], headers: dict):
+    import httpx
     """Run a bounded OpenAI-compatible tool-calling loop and return the final provider response."""
     if not OPENROUTER_API_KEY:
         raise AgentRuntimeError("AI Chat is not configured. Add OPENROUTER_API_KEY to Railway variables.", 503)
