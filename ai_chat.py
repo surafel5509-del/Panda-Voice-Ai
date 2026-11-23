@@ -100,6 +100,7 @@ async def chat_completion(owner_key: str, user_text: str, session_id: str | None
         history = json.loads(row["messages_json"]) if row else []
         language_prompts = {
             "en": "Respond in English.",
+            "am": "Respond in clear, natural Amharic (አማርኛ).",
             "ar": "Respond in clear, natural Arabic.",
             "es": "Respond in clear, natural Spanish.",
             "la": "Respond in Classical Latin (Latinitas), using grammatically correct Latin.",
