@@ -397,7 +397,7 @@ async def require_api_key(x_api_key: str | None):
 class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_AI_CHAT_CHARS)
     session_id: str | None = Field(default=None, max_length=64)
-    language: Literal["en", "ar", "es", "la"] | None = None
+    language: Literal["en", "am", "ar", "es", "la"] | None = None
 
 
 class AgentTaskInput(BaseModel):
@@ -441,6 +441,10 @@ async def lifespan(app: FastAPI):
         telegram_app.add_handler(CommandHandler("chat", ai_chat_command))
         telegram_app.add_handler(CommandHandler("newchat", new_chat_command))
         telegram_app.add_handler(CommandHandler("chatex", exit_chat_command))
+        telegram_app.add_handler(CommandHandler("agent", agent_command))
+        telegram_app.add_handler(CommandHandler("agentoff", agent_off_command))
+        telegram_app.add_handler(CommandHandler("task", task_status_command))
+        telegram_app.add_handler(CommandHandler("cancelagent", cancel_agent_command))
         telegram_app.add_handler(CommandHandler("menu", menu_command))
         telegram_app.add_handler(CommandHandler("plans", plans_command))
         telegram_app.add_handler(CommandHandler("language", language_command))
@@ -455,7 +459,12 @@ async def lifespan(app: FastAPI):
         await telegram_app.bot.set_my_commands([
             BotCommand("start", "Open Panda Voice AI"), BotCommand("menu", "Show main menu"),
             BotCommand("chat", "Start AI Chat"), BotCommand("newchat", "New AI conversation"),
-            BotCommand("chatex", "Exit AI Chat"), BotCommand("plans", "Subscription plans"),
+            BotCommand("chatex", "Exit AI Chat"),
+            BotCommand("agent", "Start long-running AI Agent"),
+            BotCommand("agentoff", "Exit long-task Agent mode"),
+            BotCommand("task", "Check latest agent task"),
+            BotCommand("cancelagent", "Cancel latest agent task"),
+            BotCommand("plans", "Subscription plans"),
             BotCommand("language", "AI Chat language"), BotCommand("settings", "Voice and model settings"),
             BotCommand("developers", "API tokens and developer tools"), BotCommand("help", "Help"),
             BotCommand("cancel", "Cancel current action"),
@@ -826,6 +835,7 @@ async def api_delete_chat_session(session_id: str, x_api_key: str | None = Heade
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎧 Create Voice", callback_data="create"), InlineKeyboardButton("🤖 AI Assistant", callback_data="ai_chat")],
+        [InlineKeyboardButton("🧠 Long Task Agent", callback_data="agent_mode")],
         [InlineKeyboardButton("🎙 Voice Library", callback_data="voices"), InlineKeyboardButton("🎨 Voice Styles", callback_data="styles")],
         [InlineKeyboardButton("⭐ Upgrade Plan", callback_data="plans"), InlineKeyboardButton("🌍 Language", callback_data="language")],
         [InlineKeyboardButton("⚙️ Studio Settings", callback_data="settings"), InlineKeyboardButton("🕘 History", callback_data="history")],
@@ -910,8 +920,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Choose a speaking style and preview that style.\n"
         "4. Tap Create Speech and send your text.\n"
         "5. Receive an MP3 you can play or download.\n"
-        "6. Tap AI Chat or send /chat to talk with the AI assistant.\n\n"
-        "AI chat commands: /chat /newchat /chatex\n"
+        "6. Tap AI Chat for quick tool-assisted conversations.\n"
+        "7. Use Long Task Agent or /agent for multi-step background work.\n\n"
+        "AI chat: /chat /newchat /chatex\n"
+        "Long tasks: /agent /agentoff /task /cancelagent\n"
         "Other commands: /start /menu /plans /language /settings /cancel /help",
         reply_markup=main_keyboard(),
     )
@@ -1048,6 +1060,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("English", callback_data="lang:en")],
             [InlineKeyboardButton("العربية · Arabic", callback_data="lang:ar")],
             [InlineKeyboardButton("Español · Spanish", callback_data="lang:es")],
+            [InlineKeyboardButton("አማርኛ · Amharic", callback_data="lang:am")],
             [InlineKeyboardButton("Lingua Latina · Latin", callback_data="lang:la")],
             [InlineKeyboardButton("⬅️ Main Menu", callback_data="home")],
         ]),
@@ -1095,11 +1108,21 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await language_command(update, context)
     elif data.startswith("lang:"):
         language = data.split(":", 1)[1]
-        if language in ("en", "ar", "es", "la"):
+        if language in ("en", "am", "ar", "es", "la"):
             context.user_data["ai_language"] = language
-            names = {"en": "English", "ar": "Arabic", "es": "Spanish", "la": "Latin"}
+            names = {"en": "English", "am": "Amharic", "ar": "Arabic", "es": "Spanish", "la": "Latin"}
             await query.message.reply_text(f"✅ AI Chat language set to {names[language]}.", reply_markup=main_keyboard())
+    elif data == "agent_mode":
+        context.user_data["waiting_text"] = False
+        context.user_data["ai_chat_active"] = False
+        context.user_data["agent_task_mode"] = True
+        await query.message.reply_text(
+            "🧠 LONG TASK AGENT is ready. Send a task that needs research, planning, analysis or a detailed report.\n\n"
+            "I will work in the background and save progress. Use /task to check progress, "
+            "/cancelagent to cancel, and /agentoff to leave this mode."
+        )
     elif data == "ai_chat":
+        context.user_data["agent_task_mode"] = False
         context.user_data["waiting_text"] = False
         context.user_data["ai_chat_active"] = True
         await query.message.reply_text(
@@ -1361,13 +1384,102 @@ async def exit_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("AI Chat closed.", reply_markup=main_keyboard())
 
 
+async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["waiting_text"] = False
+    context.user_data["ai_chat_active"] = False
+    context.user_data["agent_task_mode"] = True
+    await update.effective_message.reply_text(
+        "🧠 LONG TASK AGENT is ready.\n"
+        "Send a task that needs research, planning, analysis or a detailed report. "
+        "I will work in the background and save progress.\n\n"
+        "Use /task to check progress, /cancelagent to cancel, /agentoff to exit."
+    )
+
+
+async def agent_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["agent_task_mode"] = False
+    await update.effective_message.reply_text(
+        "Long Task Agent mode is off. Use /agent to start it again.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def task_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.args[0] if context.args else context.user_data.get("agent_task_id")
+    if not task_id:
+        await update.effective_message.reply_text("No recent agent task. Use /agent and send a task first.")
+        return
+    owner_key = "telegram-user:" + str(update.effective_user.id)
+    task = get_agent_task(owner_key, task_id)
+    if not task:
+        await update.effective_message.reply_text("Task not found. It may belong to another account or the ID is invalid.")
+        return
+    summary = (
+        f"🧠 AGENT TASK · {task['status'].upper()}\n"
+        f"Progress: {task['progress']}%\n"
+        f"Step: {task['current_step']}/{task['total_steps']}\n"
+        f"Task ID: <code>{task['task_id']}</code>"
+    )
+    if task.get("events"):
+        summary += "\n\nLatest update: " + task["events"][-1]["message"][:700]
+    await update.effective_message.reply_text(summary, parse_mode="HTML")
+    if task["status"] == "completed" and task.get("result"):
+        result = task["result"]
+        for offset in range(0, len(result), 3900):
+            await update.effective_message.reply_text(result[offset:offset + 3900])
+    elif task["status"] == "failed" and task.get("error"):
+        await update.effective_message.reply_text("Task failed: " + task["error"][:1000])
+
+
+async def cancel_agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    task_id = context.args[0] if context.args else context.user_data.get("agent_task_id")
+    if not task_id:
+        await update.effective_message.reply_text("No recent agent task to cancel.")
+        return
+    owner_key = "telegram-user:" + str(update.effective_user.id)
+    status = cancel_agent_task(owner_key, task_id)
+    if status is None:
+        await update.effective_message.reply_text("Task not found or it does not belong to your account.")
+    else:
+        await update.effective_message.reply_text(f"Agent task status: {status}.")
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
     await update.effective_message.reply_text("Text entry cancelled.", reply_markup=main_keyboard())
 
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["_telegram_user_id"] = update.effective_user.id
     text = (update.effective_message.text or "").strip()
+    if context.user_data.get("agent_task_mode"):
+        if not text:
+            return
+        try:
+            consume_request(update.effective_user.id)
+        except ValueError as exc:
+            await update.effective_message.reply_text(str(exc), reply_markup=plans_keyboard())
+            return
+        try:
+            language = context.user_data.get("ai_language")
+            if language not in ("en", "am", "ar", "es"):
+                language = None
+            task_id = create_agent_task("telegram-user:" + str(update.effective_user.id), text, language)
+            context.user_data["agent_task_id"] = task_id
+            await update.effective_message.reply_text(
+                "✅ Your task has been accepted and queued.\n"
+                f"Task ID: <code>{task_id}</code>\n"
+                "Use /task to check progress, /cancelagent to cancel, or send another task.",
+                parse_mode="HTML",
+            )
+        except ValueError as exc:
+            refund_request(update.effective_user.id)
+            await update.effective_message.reply_text(str(exc))
+        except Exception:
+            refund_request(update.effective_user.id)
+            log.exception("Telegram long-running agent task submission failed")
+            await update.effective_message.reply_text("Could not submit the task. Please try again.")
+        return
     if context.user_data.get("ai_chat_active"):
         if not text:
             return
