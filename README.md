@@ -264,3 +264,10 @@ Additional settings:
 | `AGENT_MAX_ACTIVE_TASKS_PER_OWNER` | `3` | Active queued/running task cap per account (clamped to 1–10) |
 
 Long-running tasks consume one account request when submitted; polling and cancellation do not consume additional requests. The worker uses the same OpenRouter configuration as AI Chat. Only registered read-only tools are available: no shell, arbitrary code, filesystem access, or external account-changing actions.
+
+
+### Telegram Long Task Agent
+
+The Telegram bot now includes a separate background agent mode. Send `/agent` and then describe a multi-step task; the bot queues it and returns a task ID. Use `/task` to view progress and retrieve a completed result, `/cancelagent` to cancel, and `/agentoff` to leave the mode. The regular `/chat` assistant also uses the bounded agent tools for quick questions. Amharic is supported as a selectable response language.
+
+The same capabilities are available to external apps through `POST /api/v1/agent` and the resumable task endpoints `POST /api/v1/agent/tasks`, `GET /api/v1/agent/tasks/{task_id}`, `GET /api/v1/agent/tasks`, and `POST /api/v1/agent/tasks/{task_id}/cancel`. See [API.md](API.md) for request examples and authentication details.
