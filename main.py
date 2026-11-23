@@ -899,6 +899,7 @@ def home_text(context) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["_telegram_user_id"] = update.effective_user.id
+    context.user_data["agent_task_mode"] = False
     context.user_data.setdefault("style", "natural")
     context.user_data.setdefault("engine", "s2.1-pro-free")
     context.user_data.setdefault("speed", 1.0)
@@ -909,6 +910,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
+    context.user_data["agent_task_mode"] = False
     await update.effective_message.reply_text(home_text(context), reply_markup=main_keyboard())
 
 
@@ -1093,6 +1095,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = query.message.chat
     if data == "home":
         context.user_data["waiting_text"] = False
+        context.user_data["agent_task_mode"] = False
         await query.message.reply_text(home_text(context), reply_markup=main_keyboard())
     elif data == "plans":
         await query.message.reply_text("⭐ Choose a subscription plan:", reply_markup=plans_keyboard())
@@ -1134,6 +1137,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
         )
     elif data == "ai_new":
+        context.user_data["agent_task_mode"] = False
         context.user_data["ai_chat_active"] = True
         context.user_data["ai_chat_session_id"] = None
         await query.message.reply_text("🆕 New AI conversation started. Send your message.")
@@ -1362,6 +1366,7 @@ async def developers_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ai_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_text"] = False
+    context.user_data["agent_task_mode"] = False
     context.user_data["ai_chat_active"] = True
     await update.effective_message.reply_text(
         "🤖 PANDA AI CHAT is ready. Send a message to start.\n"
@@ -1374,6 +1379,7 @@ async def ai_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def new_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["agent_task_mode"] = False
     context.user_data["ai_chat_active"] = True
     context.user_data["ai_chat_session_id"] = None
     await update.effective_message.reply_text("🆕 New AI conversation started. Send your message.")
@@ -1381,6 +1387,7 @@ async def new_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def exit_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["ai_chat_active"] = False
+    context.user_data["agent_task_mode"] = False
     await update.effective_message.reply_text("AI Chat closed.", reply_markup=main_keyboard())
 
 
