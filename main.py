@@ -1418,11 +1418,11 @@ async def task_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🧠 AGENT TASK · {task['status'].upper()}\n"
         f"Progress: {task['progress']}%\n"
         f"Step: {task['current_step']}/{task['total_steps']}\n"
-        f"Task ID: <code>{task['task_id']}</code>"
+        f"Task ID: {task['task_id']}"
     )
     if task.get("events"):
         summary += "\n\nLatest update: " + task["events"][-1]["message"][:700]
-    await update.effective_message.reply_text(summary, parse_mode="HTML")
+    await update.effective_message.reply_text(summary)
     if task["status"] == "completed" and task.get("result"):
         result = task["result"]
         for offset in range(0, len(result), 3900):
@@ -1470,7 +1470,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "✅ Your task has been accepted and queued.\n"
                 f"Task ID: <code>{task_id}</code>\n"
                 "Use /task to check progress, /cancelagent to cancel, or send another task.",
-                parse_mode="HTML",
             )
         except ValueError as exc:
             refund_request(update.effective_user.id)
