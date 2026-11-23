@@ -1,0 +1,3 @@
+# Motion design quality assurance
+
+Before saving a project, review: brief coverage, scene order, duration, typography readability, contrast, safe margins, visual consistency, timing, transitions, asset URL validity, audio/voice alignment, subtitle synchronization and final-frame hold. Check all numeric timings and ensure every media element has a valid HTTPS source. Avoid unsupported renderer features. For true 3D, particles or complex simulations, provide a separate production specification and identify the external engine required rather than pretending JSON2Video can render native 3D scenes. Explain known limitations and blockers clearly.
