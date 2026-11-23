@@ -4,7 +4,7 @@ import tempfile
 os.environ.setdefault("MOTION_AGENT_DB", tempfile.mktemp(suffix=".sqlite3"))
 os.environ.setdefault("MOTION_AGENT_API_KEY", "test-key")
 
-from main import validate_movie, save_memory, search_memory, create_plan, update_plan
+from motion_agent.main import validate_movie, save_memory, search_memory, create_plan, update_plan
 
 def test_valid_movie_with_optional_voiceover():
     movie = {"resolution":"full-hd","scenes":[{"duration":8,"elements":[
@@ -34,9 +34,8 @@ def test_memory_and_plan_persistence():
 
 
 def test_agent_chat_creates_workspace_session(monkeypatch):
-    import asyncio
     from fastapi.testclient import TestClient
-    import main as motion_main
+    import motion_agent.main as motion_main
 
     async def fake_run_agent(messages):
         assert messages[-1]["namespace"] == "workspace_one"
