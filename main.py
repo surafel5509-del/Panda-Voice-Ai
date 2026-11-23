@@ -1468,7 +1468,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["agent_task_id"] = task_id
             await update.effective_message.reply_text(
                 "✅ Your task has been accepted and queued.\n"
-                f"Task ID: <code>{task_id}</code>\n"
+                f"Task ID: {task_id}\n"
                 "Use /task to check progress, /cancelagent to cancel, or send another task.",
             )
         except ValueError as exc:
