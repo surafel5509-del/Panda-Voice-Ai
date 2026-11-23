@@ -12,9 +12,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: motion_agent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,6 +19,6 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: motion_agent/requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - run: python -m compileall -q .
-      - run: pytest -q
+      - run: pip install -r requirements.txt -r motion_agent/requirements-dev.txt
+      - run: python -m compileall -q motion_agent
+      - run: pytest -q motion_agent/tests
