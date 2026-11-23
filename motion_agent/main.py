@@ -15,6 +15,7 @@ DB_PATH = os.getenv("MOTION_AGENT_DB", "/data/motion-agent.sqlite3")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "z-ai/glm-5.3-flash").strip()
+OPENROUTER_REASONING = os.getenv("OPENROUTER_REASONING_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 JSON2VIDEO_KEY = os.getenv("JSON2VIDEO_API_KEY", "").strip()
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 API_KEY = os.getenv("MOTION_AGENT_API_KEY", "").strip()
@@ -338,6 +339,8 @@ async def run_agent(messages):
         for step in range(MAX_STEPS + 1):
             payload = {"model": OPENROUTER_MODEL, "messages": conversation, "tools": TOOLS,
                        "tool_choice": "auto", "temperature": 0.35, "max_tokens": 3500}
+            if OPENROUTER_REASONING:
+                payload["reasoning"] = {"enabled": True, "effort": "high"}
             try:
                 r = await client.post(OPENROUTER_BASE + "/chat/completions",
                   headers={"Authorization":"Bearer " + OPENROUTER_KEY, "Content-Type":"application/json",
