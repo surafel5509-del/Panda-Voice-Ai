@@ -20,8 +20,9 @@ Required:
 
 Optional:
 - `OPENROUTER_BASE_URL` — defaults to `https://openrouter.ai/api/v1`.
-- `OPENROUTER_MODEL` — defaults to `z-ai/glm-5.3-flash`; choose a tool-calling model available to your OpenRouter account.
-- `JSON2VIDEO_API_KEY` — existing JSON2Video key; required only for final video rendering.
+- `OPENROUTER_MODEL` — defaults to `z-ai/glm-5.3-flash`, matching the existing AI runtime default; choose a tool-calling model available to your OpenRouter account.
+- `OPENROUTER_REASONING_ENABLED` — defaults to `true` and enables model reasoning for long-horizon tasks.
+- `JSON2VIDEO_API_KEY` — JSON2Video API key from its dashboard; required for final video rendering and embedded voiceover synthesis. This key was not present in the existing `panda-voice-ai` service variable list, so it must be supplied to the new service.
 - `TAVILY_API_KEY` — enables visual-reference research.
 - `MOTION_AGENT_DB` — defaults to `/data/motion-agent.sqlite3`.
 - `MOTION_CORS_ORIGINS` — comma-separated allowed origins; set to your editor's exact HTTPS origin(s) in production.
