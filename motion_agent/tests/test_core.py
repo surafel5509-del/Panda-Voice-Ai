@@ -22,7 +22,7 @@ def test_rejects_invalid_voice_model():
         assert "voice model" in str(exc).lower()
 
 def test_memory_and_plan_persistence():
-    from main import init_db
+    from motion_agent.main import init_db
     init_db()
     saved = save_memory("test-workspace", {"category":"style","content":"Prefers cinematic typography","tags":["type"],"importance":4})
     found = search_memory("test-workspace","cinematic typography")
