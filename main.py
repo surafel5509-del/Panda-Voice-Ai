@@ -39,6 +39,8 @@ from billing import (
     validate_pending_payment,
 )
 
+from motion_agent.main import app as motionforge_app, init_db as init_motionforge_db
+
 # Never log HTTP request URLs: Telegram bot URLs contain the bot token.
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -433,6 +435,7 @@ async def lifespan(app: FastAPI):
     init_ai_chat_db()
     init_agent_tasks_db()
     init_billing_db()
+    init_motionforge_db()
     start_agent_task_worker()
     if BOT_TOKEN:
         telegram_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
@@ -507,6 +510,7 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan,
 )
+app.mount("/motionforge", motionforge_app)
 
 
 @app.get("/health")
