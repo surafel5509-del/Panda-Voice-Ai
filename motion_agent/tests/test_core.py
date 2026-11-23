@@ -31,3 +31,25 @@ def test_memory_and_plan_persistence():
     plan = create_plan("test-workspace", {"title":"Launch film","goal":"Create a product film","steps":["Storyboard","Render"]})
     updated = update_plan("test-workspace", {"plan_id":plan["plan_id"],"step_index":0,"step_status":"completed"})
     assert updated["steps"][0]["status"] == "completed"
+
+
+def test_agent_chat_creates_workspace_session(monkeypatch):
+    import asyncio
+    from fastapi.testclient import TestClient
+    import main as motion_main
+
+    async def fake_run_agent(messages):
+        assert messages[-1]["namespace"] == "workspace_one"
+        return {"reply": "Storyboard ready.", "model": "test-model", "usage": {}, "tool_steps": 1}
+
+    monkeypatch.setattr(motion_main, "run_agent", fake_run_agent)
+    with TestClient(motion_main.app) as client:
+        response = client.post(
+            "/api/v1/motion/agent",
+            headers={"X-API-Key": "test-key"},
+            json={"message": "Create a short storyboard", "workspace_id": "workspace one"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reply"] == "Storyboard ready."
+    assert body["session_id"]
