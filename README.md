@@ -219,3 +219,55 @@ Creating an API token displays the Base URL, all Voice and AI Chat endpoints, Sw
 Telegram's native command menu includes `/start`, `/menu`, `/chat`, `/newchat`, `/chatex`, `/plans`, `/language`, `/settings`, `/developers`, `/help` and `/cancel`.
 
 Free users can make 2 combined AI Chat + Voice requests per UTC day and change style/model twice per day. Paid subscribers can switch styles and speech models freely.
+
+
+## Professional AI Agent
+
+The existing AI Chat now runs through a bounded OpenRouter tool-calling agent. Telegram AI Chat and the authenticated REST API share the same agent runtime and existing persistent sessions. The existing Fish Audio text-to-speech studio, voice catalog, styles, previews, MP3 generation, Telegram voice workflow and `POST /api/v1/tts` endpoint are intentionally unchanged.
+
+Built-in agent tools:
+- `calculator` — restricted arithmetic and approved math functions (no Python execution).
+- `get_current_datetime` — current date/time with IANA timezone support.
+- `web_search` — live research through Tavily, with result URLs; configure `TAVILY_API_KEY` on Railway.
+
+New endpoints (all require `X-API-Key`):
+- `POST /api/v1/agent` — stateful tool-using agent; same request/response and session behavior as `/api/v1/chat`.
+- `GET /api/v1/agent/tools` — lists registered tools and whether optional web search is configured.
+
+Agent configuration:
+| Variable | Required | Default |
+|---|---:|---|
+| `TAVILY_API_KEY` | Optional; enables live web search | — |
+| `AGENT_MAX_TOOL_STEPS` | No | `5` (clamped to 1–8) |
+| `AGENT_MAX_SEARCH_RESULTS` | No | `5` (clamped to 1–8) |
+
+The agent only executes explicitly registered tools. It has no shell, filesystem, arbitrary-code, or unrestricted HTTP tool. Tool-call iterations and search-result sizes are bounded. API authentication, per-account sessions, rate limits and shared subscription quotas continue to apply. The agent uses the configured OpenRouter model, which must support tool calling.
+
+
+### Long-running agent tasks
+
+For work that needs multiple research, analysis, writing, and verification steps, use the asynchronous task API. It returns immediately with a task ID; the worker stores progress and results in the persistent SQLite volume so clients can reconnect and poll after a browser or app restart.
+
+- `POST /api/v1/agent/tasks` — queue a multi-step task (HTTP 202).
+- `GET /api/v1/agent/tasks/{task_id}` — read status, plan, progress events, step outputs, quality review, and final result.
+- `GET /api/v1/agent/tasks?limit=20` — list the authenticated owner's recent task summaries.
+- `POST /api/v1/agent/tasks/{task_id}/cancel` — cancel a queued task or request cancellation of a running task.
+
+Task requests support up to 10,000 characters. The planner is capped at 8 steps by default; each step can use the bounded registered tools, receives prior step outputs, and is retried once after a transient model error. A final quality-review pass checks coverage, cautions, and missing items before the final answer is assembled. Execution has a configurable time limit; the worker renews a 3-minute SQLite lease every 45 seconds so another worker can reclaim interrupted work after the lease expires. Tasks are isolated by authenticated account owner.
+
+Additional settings:
+| Variable | Default | Purpose |
+|---|---:|---|
+| `AGENT_MAX_TASK_STEPS` | `8` | Maximum plan steps (clamped to 1–8) |
+| `AGENT_MAX_TASK_SECONDS` | `900` | Maximum execution time (clamped to 60–1,800 seconds) |
+| `AGENT_TASK_POLL_SECONDS` | `2` | Worker queue polling interval |
+| `AGENT_MAX_ACTIVE_TASKS_PER_OWNER` | `3` | Active queued/running task cap per account (clamped to 1–10) |
+
+Long-running tasks consume one account request when submitted; polling and cancellation do not consume additional requests. The worker uses the same OpenRouter configuration as AI Chat. Only registered read-only tools are available: no shell, arbitrary code, filesystem access, or external account-changing actions.
+
+
+### Telegram Long Task Agent
+
+The Telegram bot now includes a separate background agent mode. Send `/agent` and then describe a multi-step task; the bot queues it and returns a task ID. Use `/task` to view progress and retrieve a completed result, `/cancelagent` to cancel, and `/agentoff` to leave the mode. The regular `/chat` assistant also uses the bounded agent tools for quick questions. Amharic is supported as a selectable response language.
+
+The same capabilities are available to external apps through `POST /api/v1/agent` and the resumable task endpoints `POST /api/v1/agent/tasks`, `GET /api/v1/agent/tasks/{task_id}`, `GET /api/v1/agent/tasks`, and `POST /api/v1/agent/tasks/{task_id}/cancel`. See [API.md](API.md) for request examples and authentication details.
