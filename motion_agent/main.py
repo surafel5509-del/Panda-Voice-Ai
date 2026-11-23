@@ -71,6 +71,10 @@ def init_db():
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_plans_namespace ON plans(namespace, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS project_versions(
+          project_id TEXT NOT NULL, version INTEGER NOT NULL, movie_json TEXT NOT NULL,
+          created_at TEXT NOT NULL, PRIMARY KEY(project_id, version)
+        );
         """)
 
 @app.on_event("startup")
@@ -172,12 +176,36 @@ def save_project(args):
     movie = validate_movie(args.get("movie"))
     pid = str(uuid.uuid4())
     stamp = now()
+    movie_json=json.dumps(movie, ensure_ascii=False)
     with db() as con:
         con.execute("INSERT INTO projects VALUES(?,?,?,?,?,?)",
-          (pid, title, brief, json.dumps(movie, ensure_ascii=False), stamp, stamp))
-    return {"project_id": pid, "title": title, "scene_count": len(movie["scenes"]),
+          (pid, title, brief, movie_json, stamp, stamp))
+        con.execute("INSERT INTO project_versions VALUES(?,?,?,?)",(pid,1,movie_json,stamp))
+    return {"project_id": pid, "version":1, "title": title, "scene_count": len(movie["scenes"]),
             "duration_seconds": sum(max(0, float(s.get("duration", 0))) for s in movie["scenes"]),
             "status": "saved", "next_action": "Call render_motion_project with this project_id when the user wants a final video."}
+
+def update_project(args):
+    pid=str(args.get("project_id",""))
+    movie=validate_movie(args.get("movie"))
+    stamp=now()
+    with db() as con:
+        row=con.execute("SELECT * FROM projects WHERE project_id=?",(pid,)).fetchone()
+        if not row: raise ValueError("Motion project not found.")
+        version=con.execute("SELECT COALESCE(MAX(version),0)+1 AS v FROM project_versions WHERE project_id=?",(pid,)).fetchone()["v"]
+        movie_json=json.dumps(movie,ensure_ascii=False)
+        title=str(args.get("title",row["title"])).strip()[:120]
+        brief=str(args.get("brief",row["brief"])).strip()[:4000]
+        con.execute("UPDATE projects SET title=?,brief=?,movie_json=?,updated_at=? WHERE project_id=?",(title,brief,movie_json,stamp,pid))
+        con.execute("INSERT INTO project_versions VALUES(?,?,?,?)",(pid,version,movie_json,stamp))
+    return {"project_id":pid,"version":version,"title":title,"scene_count":len(movie["scenes"]),"status":"updated"}
+
+def get_project(project_id):
+    with db() as con:
+        row=con.execute("SELECT * FROM projects WHERE project_id=?",(project_id,)).fetchone()
+        versions=con.execute("SELECT version,created_at FROM project_versions WHERE project_id=? ORDER BY version DESC",(project_id,)).fetchall()
+    if not row: raise ValueError("Motion project not found.")
+    return {**dict(row),"movie":json.loads(row["movie_json"]),"versions":[dict(v) for v in versions]}
 
 async def submit_render(project_id):
     if not JSON2VIDEO_KEY:
@@ -237,6 +265,8 @@ TOOLS = [
  {"type":"function","function":{"name":"load_motion_skill","description":"Load a specialist motion-design skill by its exact name from the skill catalogue.","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":False}}},
  {"type":"function","function":{"name":"search_visual_references","description":"Research current visual styles, motion design references, techniques or documentation. Requires Tavily configuration.","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":False}}},
  {"type":"function","function":{"name":"save_motion_project","description":"Create and persist a validated professional video project as a JSON2Video movie specification. Use this after planning the scenes and layers. Never invent media URLs; use only URLs provided by the user or known public assets.","parameters":{"type":"object","properties":{"title":{"type":"string"},"brief":{"type":"string"},"movie":{"type":"object","properties":{"resolution":{"type":"string","enum":["full-hd","hd","square","vertical"]},"scenes":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","properties":{"duration":{"type":"number"},"background-color":{"type":"string"},"transition":{"type":"object"},"elements":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"type":{"type":"string","enum":["text","image","video","audio","component","voice","audiogram","subtitles"]},"text":{"type":"string"},"src":{"type":"string"},"component":{"type":"string"},"style":{"type":"string"},"settings":{"type":"object"},"position":{"type":"string"},"x":{"type":["number","string"]},"y":{"type":["number","string"]},"width":{"type":["number","string"]},"height":{"type":["number","string"]},"resize":{"type":"string"},"start":{"type":"number"},"duration":{"type":"number"},"fade-in":{"type":"number"},"fade-out":{"type":"number"},"keyframes":{"type":"array"},"rotate":{"type":"object"},"volume":{"type":"number"},"muted":{"type":"boolean"},"voice":{"type":"string"},"model":{"type":"string","enum":["azure","elevenlabs","elevenlabs-v2","elevenlabs-flash-v2-5","elevenlabs-v3","elevenlabs-v4"]},"z-index":{"type":"integer"}},"required":["type"],"additionalProperties":True}}},"required":["elements"],"additionalProperties":True}}},"required":["scenes"],"additionalProperties":True}},"required":["title","brief","movie"],"additionalProperties":False}}},
+ {"type":"function","function":{"name":"update_motion_project","description":"Update an existing saved motion project with a revised validated Movie JSON. Creates a new immutable version; never overwrites prior versions.","parameters":{"type":"object","properties":{"project_id":{"type":"string"},"title":{"type":"string"},"brief":{"type":"string"},"movie":{"type":"object","properties":{"resolution":{"type":"string","enum":["full-hd","hd","square","vertical"]},"scenes":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","properties":{"duration":{"type":"number"},"background-color":{"type":"string"},"transition":{"type":"object"},"elements":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"type":{"type":"string","enum":["text","image","video","audio","component","voice","audiogram","subtitles","html"]},"text":{"type":"string"},"src":{"type":"string"},"voice":{"type":"string"},"model":{"type":"string","enum":["azure","elevenlabs","elevenlabs-v2","elevenlabs-flash-v2-5","elevenlabs-v3","elevenlabs-v4"]},"component":{"type":"string"},"style":{"type":"string"},"settings":{"type":"object"},"position":{"type":"string"},"x":{"type":["number","string"]},"y":{"type":["number","string"]},"width":{"type":["number","string"]},"height":{"type":["number","string"]},"start":{"type":"number"},"duration":{"type":"number"},"fade-in":{"type":"number"},"fade-out":{"type":"number"},"keyframes":{"type":"array"},"volume":{"type":"number"},"muted":{"type":"boolean"}},"required":["type"],"additionalProperties":true}}},"required":["elements"],"additionalProperties":true}}},"required":["scenes"],"additionalProperties":true}},"required":["project_id","movie"],"additionalProperties":false}}},
+ {"type":"function","function":{"name":"get_motion_project","description":"Retrieve a saved motion project and its latest version metadata before revising or rendering it.","parameters":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"],"additionalProperties":false}}},
  {"type":"function","function":{"name":"render_motion_project","description":"Submit a saved motion project to the JSON2Video renderer. This incurs the user's external rendering quota/credits; only call when the user clearly requested a final render.","parameters":{"type":"object","properties":{"project_id":{"type":"string"}},"required":["project_id"],"additionalProperties":False}}},
  {"type":"function","function":{"name":"get_render_status","description":"Check a submitted render and return its status and final MP4 URL when ready.","parameters":{"type":"object","properties":{"render_id":{"type":"string"}},"required":["render_id"],"additionalProperties":False}}}
 ]
@@ -325,6 +355,8 @@ async def execute(name, args, namespace="default"):
     if name == "load_motion_skill": return {"name": args.get("name"), "content": load_skill(args.get("name", ""))}
     if name == "search_visual_references": return await web_search(args.get("query", ""))
     if name == "save_motion_project": return save_project(args)
+    if name == "update_motion_project": return update_project(args)
+    if name == "get_motion_project": return get_project(args.get("project_id",""))
     if name == "render_motion_project": return await submit_render(args.get("project_id", ""))
     if name == "get_render_status": return await render_status(args.get("render_id", ""))
     raise ValueError("Tool is not registered.")
@@ -449,13 +481,23 @@ async def projects_list(x_api_key: str | None = Header(default=None)):
         rows = con.execute("SELECT project_id,title,brief,created_at,updated_at FROM projects ORDER BY created_at DESC LIMIT 50").fetchall()
     return {"projects":[dict(x) for x in rows]}
 
+@app.post("/api/v1/motion/projects")
+async def project_create(payload: dict, x_api_key: str | None = Header(default=None)):
+    auth(x_api_key)
+    try: return save_project(payload)
+    except ValueError as exc: raise HTTPException(422,str(exc))
+
 @app.get("/api/v1/motion/projects/{project_id}")
 async def project_get(project_id: str, x_api_key: str | None = Header(default=None)):
     auth(x_api_key)
-    with db() as con:
-        row = con.execute("SELECT * FROM projects WHERE project_id=?", (project_id,)).fetchone()
-    if not row: raise HTTPException(404,"Project not found.")
-    return {**dict(row), "movie":json.loads(row["movie_json"])}
+    try: return get_project(project_id)
+    except ValueError as exc: raise HTTPException(404,str(exc))
+
+@app.put("/api/v1/motion/projects/{project_id}")
+async def project_update(project_id: str, payload: dict, x_api_key: str | None = Header(default=None)):
+    auth(x_api_key)
+    try: return update_project({**payload,"project_id":project_id})
+    except ValueError as exc: raise HTTPException(422,str(exc))
 
 @app.post("/api/v1/motion/projects/{project_id}/render")
 async def project_render(project_id: str, x_api_key: str | None = Header(default=None)):
