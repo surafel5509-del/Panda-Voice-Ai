@@ -1,8 +1,8 @@
 import os
 import tempfile
 
-os.environ.setdefault("MOTION_AGENT_DB", tempfile.mktemp(suffix=".sqlite3"))
-os.environ.setdefault("MOTION_AGENT_API_KEY", "test-key")
+os.environ["MOTION_AGENT_DB"] = tempfile.mktemp(suffix=".sqlite3")
+os.environ["MOTION_AGENT_API_KEY"] = "test-key"
 
 from motion_agent.main import validate_movie, save_memory, search_memory, create_plan, update_plan
 
