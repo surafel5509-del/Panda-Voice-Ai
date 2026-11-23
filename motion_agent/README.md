@@ -1,6 +1,6 @@
 # MotionForge — Autonomous Motion Design Agent
 
-Production-oriented, tool-using AI agent backend for a professional motion-design/video editor. It is an isolated Railway service rooted at `motion_agent/`; it does not modify or replace the existing Panda Voice service.
+Production-oriented, tool-using AI agent backend for a professional motion-design/video editor. It is mounted under `/motionforge` inside the existing Panda Voice FastAPI service. It shares the current Railway deployment and `/data` volume while keeping its own SQLite database file and API key.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ Production-oriented, tool-using AI agent backend for a professional motion-desig
 - **Motion project system:** Validates and stores JSON2Video Movie JSON specifications in SQLite.
 - **Render provider:** JSON2Video asynchronous render API; status polling returns MP4 URL when complete.
 - **Voiceover:** Optional native JSON2Video `voice` element. JSON2Video supports Azure and ElevenLabs TTS. The agent only adds narration when requested or appropriate, and keeps the script and voice settings in the Movie JSON.
-- **Website API:** FastAPI REST endpoints and generated OpenAPI docs at `/docs`.
+- **Website API:** FastAPI sub-application mounted at `/motionforge`; its interactive OpenAPI docs are at `/motionforge/docs`.
 - **Persistence:** SQLite database at `/data/motion-agent.sqlite3`; mount a Railway volume at `/data`.
 
 ## Environment
@@ -22,7 +22,7 @@ Optional:
 - `OPENROUTER_BASE_URL` — defaults to `https://openrouter.ai/api/v1`.
 - `OPENROUTER_MODEL` — defaults to `z-ai/glm-5.3-flash`, matching the existing AI runtime default; choose a tool-calling model available to your OpenRouter account.
 - `OPENROUTER_REASONING_ENABLED` — defaults to `true` and enables model reasoning for long-horizon tasks.
-- `JSON2VIDEO_API_KEY` — JSON2Video API key from its dashboard; required for final video rendering and embedded voiceover synthesis. This key was not present in the existing `panda-voice-ai` service variable list, so it must be supplied to the new service.
+- `JSON2VIDEO_API_KEY` — existing Legal Movie project shared variable; required for final video rendering and embedded voiceover synthesis.
 - `TAVILY_API_KEY` — enables visual-reference research.
 - `MOTION_AGENT_DB` — defaults to `/data/motion-agent.sqlite3`.
 - `MOTION_CORS_ORIGINS` — comma-separated allowed origins; set to your editor's exact HTTPS origin(s) in production.
@@ -32,26 +32,23 @@ Never put provider keys in browser code. Only your backend should hold them. Use
 
 ## Deploy on Railway
 
-Create a new service in the existing `Legal Movie Bot` project, with this repository and branch:
+MotionForge runs inside the existing Railway service:
+- Project: `Legal Movie Bot`
+- Service: `panda-voice-ai`
 - Repository: `surafel5509-del/Panda-Voice-Ai`
-- Branch: `motion-agent-foundation`
-- Root directory: `/motion_agent`
-- Healthcheck: `/health`
-- Start command: Dockerfile default
-- Persistent volume: `/data`
+- Deployment branch: `main` (after the integration PR is merged)
+- Existing persistent volume: `/data` (reused; MotionForge uses `/data/motion-agent.sqlite3`)
 
-Set provider keys on the new service using Railway variable references, not by copying or printing secret values:
-- `OPENROUTER_API_KEY=${{panda-voice-ai.OPENROUTER_API_KEY}}`
-- `JSON2VIDEO_API_KEY=${{panda-voice-ai.JSON2VIDEO_API_KEY}}`
+No additional Railway service or paid plan is required. The existing `OPENROUTER_API_KEY` and `JSON2VIDEO_API_KEY` project shared variables are inherited by the service. Set a unique service-level `MOTION_AGENT_API_KEY` before using the new API. Keep provider keys on the server; never place them in browser code.
 
-Generate a unique `MOTION_AGENT_API_KEY` and set it only on this service. Configure CORS to the website origin. The existing `panda-voice-ai` service, its variables, database and volume must remain untouched.
+The existing Panda Voice endpoints remain at their current paths. MotionForge endpoints are mounted under `/motionforge`, and its OpenAPI docs are at `/motionforge/docs`.
 
 ## REST API
 
-All protected endpoints require `X-API-Key: <MOTION_AGENT_API_KEY>`.
+All protected endpoints require `X-API-Key: <MOTION_AGENT_API_KEY>`. The paths below are relative to the `/motionforge` mount prefix.
 
 ### Chat
-`POST /api/v1/motion/agent`
+`POST /motionforge/api/v1/motion/agent`
 ```json
 {
   "workspace_id": "surafel-editor",
@@ -62,17 +59,17 @@ All protected endpoints require `X-API-Key: <MOTION_AGENT_API_KEY>`.
 Returns `session_id`, `reply`, `model`, token usage and tool step count. Reuse the returned session ID to continue the conversation.
 
 ### Other endpoints
-- `GET /health` — public health/configuration status; never returns secret values.
-- `GET /api/v1/motion/tools` — registered agent tools.
-- `GET /api/v1/motion/skills` — specialist skill catalogue.
-- `GET/POST /api/v1/motion/memories` — workspace memory.
-- `GET/POST /api/v1/motion/plans` — persistent work plans.
-- `GET /api/v1/motion/projects` — saved motion projects.
-- `GET /api/v1/motion/projects/{project_id}` — project JSON.
-- `POST /api/v1/motion/projects/{project_id}/render` — submit a paid render.
-- `GET /api/v1/motion/renders/{render_id}` — render status and MP4 URL.
+- `GET /motionforge/health` — public health/configuration status; never returns secret values.
+- `GET /motionforge/api/v1/motion/tools` — registered agent tools.
+- `GET /motionforge/api/v1/motion/skills` — specialist skill catalogue.
+- `GET/POST /motionforge/api/v1/motion/memories` — workspace memory.
+- `GET/POST /motionforge/api/v1/motion/plans` — persistent work plans.
+- `GET /motionforge/api/v1/motion/projects` — saved motion projects.
+- `GET /motionforge/api/v1/motion/projects/{project_id}` — project JSON.
+- `POST /motionforge/api/v1/motion/projects/{project_id}/render` — submit a paid render.
+- `GET /motionforge/api/v1/motion/renders/{render_id}` — render status and MP4 URL.
 
-Interactive API reference: `/docs`; OpenAPI schema: `/openapi.json`.
+Interactive API reference: `/motionforge/docs`; OpenAPI schema: `/motionforge/openapi.json`.
 
 ## JSON2Video voiceover
 
