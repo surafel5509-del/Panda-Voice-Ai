@@ -329,6 +329,7 @@ async def execute(name, args, namespace="default"):
     raise ValueError("Tool is not registered.")
 
 async def run_agent(messages):
+    namespace = messages[-1].get("namespace", "default") if messages else "default"
     if not OPENROUTER_KEY:
         raise HTTPException(503, "OPENROUTER_API_KEY is not configured.")
     conversation = list(messages)
@@ -363,7 +364,7 @@ async def run_agent(messages):
                 name = fn.get("name", "")
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
-                    result = await execute(name, args, namespace=messages[-1].get("namespace","default"))
+                    result = await execute(name, args, namespace=namespace)
                     content = json.dumps(result, ensure_ascii=False, default=str)
                 except Exception as exc:
                     content = json.dumps({"error": str(exc)[:700]}, ensure_ascii=False)
