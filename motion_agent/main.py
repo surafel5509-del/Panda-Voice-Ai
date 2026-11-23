@@ -48,7 +48,7 @@ def init_db():
     with db() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS sessions(
-          session_id TEXT PRIMARY KEY, messages_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+          session_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', messages_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS projects(
           project_id TEXT PRIMARY KEY, title TEXT NOT NULL, brief TEXT NOT NULL,
@@ -262,7 +262,7 @@ def system_prompt():
     )
 
 def search_memory(namespace, query, category=None):
-    terms = [x.lower() for x in re.findall(r"[\\w-]{2,}", query)[:8]]
+    terms = [x.lower() for x in re.findall(r"[A-Za-z0-9_-]{2,}", query)[:8]]
     with db() as con:
         rows = con.execute("SELECT * FROM memories WHERE namespace=? ORDER BY importance DESC, updated_at DESC LIMIT 100", (namespace,)).fetchall()
     ranked = []
@@ -332,7 +332,7 @@ async def run_agent(messages):
     namespace = messages[-1].get("namespace", "default") if messages else "default"
     if not OPENROUTER_KEY:
         raise HTTPException(503, "OPENROUTER_API_KEY is not configured.")
-    conversation = list(messages)
+    conversation = [{k:v for k,v in m.items() if k != "namespace"} for m in messages]
     usage = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(150, connect=15)) as client:
         for step in range(MAX_STEPS + 1):
@@ -398,7 +398,7 @@ async def agent_chat(payload: AgentInput, x_api_key: str | None = Header(default
     auth(x_api_key)
     sid = payload.session_id or str(uuid.uuid4())
     with db() as con:
-        row = con.execute("SELECT messages_json FROM sessions WHERE session_id=?", (sid,)).fetchone()
+        row = con.execute("SELECT messages_json FROM sessions WHERE session_id=? AND namespace=?", (sid,namespace)).fetchone()
         history = json.loads(row["messages_json"]) if row else []
     namespace = re.sub(r"[^a-zA-Z0-9_-]", "_", payload.workspace_id)[:100]
     memories = search_memory(namespace, payload.message)
@@ -409,8 +409,8 @@ async def agent_chat(payload: AgentInput, x_api_key: str | None = Header(default
     history = history[-40:]
     stamp = now()
     with db() as con:
-        con.execute("INSERT INTO sessions VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET messages_json=excluded.messages_json,updated_at=excluded.updated_at",
-                    (sid,json.dumps(history,ensure_ascii=False),stamp,stamp))
+        con.execute("INSERT INTO sessions(session_id,namespace,messages_json,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET messages_json=excluded.messages_json,updated_at=excluded.updated_at",
+                    (sid,namespace,json.dumps(history,ensure_ascii=False),stamp,stamp))
     return {"session_id":sid,**result}
 
 @app.get("/api/v1/motion/memories")
