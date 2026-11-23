@@ -1,0 +1,3 @@
+# Editor integration and project handoff
+
+Treat the web editor as the authoritative interactive editing surface. Create a stable project ID, persist the full Movie JSON, and return structured metadata for scenes, elements and timing. Never hide a destructive edit behind a vague instruction. Prefer creating a new project version over overwriting a saved one. Keep user-supplied media references intact; never invent upload URLs. Return machine-readable IDs and explicit status values so the editor can render a timeline, preview and inspector. Rendering is a separate action from project saving and requires user intent because it can consume external quota. Distinguish rendered MP4 output from an editable source project.
