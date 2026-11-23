@@ -210,3 +210,55 @@ Optional Railway variables:
 - `AGENT_MAX_TASK_SECONDS` (default `900`, hard range 60–1,800).
 - `AGENT_TASK_POLL_SECONDS` (default `2`, hard range 0.5–10).
 - `AGENT_MAX_ACTIVE_TASKS_PER_OWNER` (default `3`, hard range 1–10).
+
+
+## Telegram AI Agent
+
+The Telegram bot exposes both quick tool-assisted chat and resumable long-running agent tasks:
+
+- `/chat` — quick AI conversation using the same bounded tool-calling runtime as `POST /api/v1/agent`.
+- `/agent` — enter Long Task Agent mode; send a multi-step request to queue it for background execution.
+- `/task [task_id]` — check the latest task, or a specific task ID. Completed tasks return the saved final result.
+- `/cancelagent [task_id]` — cancel the latest task, or a specific task owned by the Telegram account.
+- `/agentoff` — leave Long Task Agent mode.
+- `/newchat` and `/chatex` — manage quick AI Chat independently.
+
+Long-running Telegram tasks use the same persistent task worker, SQLite storage, owner isolation, retry limits and quality review as the REST task API. Submitting a task consumes one shared account request. Checking or cancelling a task does not consume an additional request. The task ID is private to the account that submitted it.
+
+### API examples
+
+Base URL: `https://panda-voice-ai-production.up.railway.app`
+
+Quick agent request:
+
+```bash
+curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/agent \
+  -H 'X-API-Key: YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Explain this topic and calculate 15% of 2400.","session_id":null,"language":"am"}'
+```
+
+Create a background task:
+
+```bash
+curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/agent/tasks \
+  -H 'X-API-Key: YOUR_API_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Research this topic, compare reliable sources and prepare a report.","language":"am"}'
+```
+
+Check progress/result:
+
+```bash
+curl https://panda-voice-ai-production.up.railway.app/api/v1/agent/tasks/TASK_ID \
+  -H 'X-API-Key: YOUR_API_KEY'
+```
+
+Cancel a task:
+
+```bash
+curl -X POST https://panda-voice-ai-production.up.railway.app/api/v1/agent/tasks/TASK_ID/cancel \
+  -H 'X-API-Key: YOUR_API_KEY'
+```
+
+Use an account API token in the `X-API-Key` header. Do not put API keys in public frontend code or share task IDs with other users.
